@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - MONGO_URI=${MONGO_URI}
+      - GCP_BUCKET_NAME=${GCP_BUCKET_NAME}
+      - GCP_CREDENTIALS_PATH=${GCP_CREDENTIALS_PATH}
+    volumes:
+      - .:/app
+    # If using Streamlit, you can change the entrypoint or add another service
+    # command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+
+  streamlit:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - .:/app
+    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
