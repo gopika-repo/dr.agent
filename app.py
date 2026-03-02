@@ -1534,27 +1534,59 @@ class GitHubRepoEvaluator:
                 parts = repo_url.rstrip('/').split('/')
                 candidate_name = parts[-2] if len(parts) >= 2 else 'Candidate'
 
-            # Extract commit data from analysis results
+            # ── Fetch commit data via GitHub API ──
             commit_data = {}
+            repo_stats = {}
+            try:
+                from utils.github_client import GitHubClient
+                gh_token = os.environ.get('GITHUB_TOKEN', '')
+                gh = GitHubClient(token=gh_token)
+                owner, repo_name = gh.extract_owner_repo(repo_url)
+                if owner and repo_name:
+                    commit_data = gh.get_commit_data(owner, repo_name)
+                    repo_stats = gh.get_repo_stats(owner, repo_name)
+            except Exception as e:
+                print(f"[PDF] GitHub API fetch error: {e}")
+                commit_data = {'fetched': False, 'error': str(e)}
+                repo_stats = {}
+
+            # Merge repo_stats into repo_analysis for the PDF
             if isinstance(repo_analysis, dict):
-                data_block = repo_analysis.get('data', {})
-                if isinstance(data_block, dict):
-                    final_report = data_block.get('final_report', {})
-                    if isinstance(final_report, dict):
-                        fr_report = final_report.get('report', {})
-                        if isinstance(fr_report, dict):
-                            commit_data = fr_report.get('commit_data', {})
+                repo_analysis['repo_stats'] = repo_stats
+            else:
+                repo_analysis = {'repo_stats': repo_stats}
 
             # Extract metrics from analysis
             metrics = real_scores
 
-            # Build experience_scores dict (minimal — uses current values)
-            experience_scores = {
-                experience_level: {
-                    'overall_score': evaluation_result.get('overall_score', 0),
-                    'experience_context': evaluation_result.get('experience_context', {}),
+            # ── Build experience_scores for ALL required levels ──
+            experience_scores = {}
+            required_levels = ['2nd_year', '3rd_year', '4th_year',
+                               'fresher', 'experienced_0_2', 'senior']
+            try:
+                for lvl in required_levels:
+                    if lvl == experience_level:
+                        # Use the already-adapted evaluation for the current level
+                        experience_scores[lvl] = {
+                            'overall_score': evaluation_result.get('overall_score', 0),
+                            'experience_context': evaluation_result.get('experience_context', {}),
+                        }
+                    else:
+                        # Adapt scores for other levels using the raw evaluation
+                        adapted = self.adapter.adapt_scores(gemini_raw, lvl)
+                        experience_scores[lvl] = {
+                            'overall_score': adapted.get('overall_score', 0),
+                            'experience_context': adapted.get('experience_context', {}),
+                        }
+            except Exception as e:
+                print(f"[PDF] Experience adaptation error: {e}")
+                # Fallback to just the current level
+                experience_scores = {
+                    experience_level: {
+                        'overall_score': evaluation_result.get('overall_score', 0),
+                        'experience_context': evaluation_result.get('experience_context', {}),
+                    }
                 }
-            }
 
             with st.spinner("Generating PDF report... This may take a few minutes."):
                 pdf_bytes = generate_pdf_report(

@@ -69,7 +69,7 @@ def trigger_pdf_generation_flow(evaluation_data):
     GCP_CREDENTIALS_PATH = os.environ.get("GCP_CREDENTIALS_PATH", "whatsapp-market-asset-manager.json")
     MONGO_URI = os.environ.get("MONGO_URI") # Should be set in env
     
-    if not MONGO_URI:
+    if not MONGO_URI and os.path.exists(".env.local"):
         # Try to read from .env.local if not in env
         from dotenv import dotenv_values
         config = dotenv_values(".env.local")
@@ -133,7 +133,9 @@ def trigger_pdf_generation_flow(evaluation_data):
         candidate_slug = "".join([c if c.isalnum() else "_" for c in candidate_name]).lower()
         
         hackathon_name = evaluation_data.get("hackathon_name") or evaluation_data.get("challenge_type", "General")
-        hackathon_slug = "".join([c if c.isalnum() else "_" for c in hackathon_name])
+        # Include challenge ID (subset) in slug to handle duplicate names
+        challenge_suffix = evaluation_id[-6:] if evaluation_id else "gen"
+        hackathon_slug = "".join([c if c.isalnum() else "_" for c in hackathon_name]) + "_" + challenge_suffix
         
         destination_blob_name = f"external hackathons/{hackathon_slug}/{candidate_slug}_{evaluation_id}_{timestamp}.pdf"
         

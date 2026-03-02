@@ -24,6 +24,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.get("/")
+def root():
+    return {
+        "status": "ok",
+        "service": "competition-analyser"
+    }
 
 class APIBackend:
     def __init__(self):
