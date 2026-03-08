@@ -1,10 +1,7 @@
-version: '3.8'
-
 services:
   api:
     build: .
-    ports:
-      - "8000:8000"
+    container_name: competition-analyser-api
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -13,16 +10,19 @@ services:
       - GCP_CREDENTIALS_PATH=${GCP_CREDENTIALS_PATH}
     volumes:
       - .:/app
-    # If using Streamlit, you can change the entrypoint or add another service
-    # command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-net"
+      - "traefik.http.routers.evaluator.rule=Host(`evaluator.hidevs.xyz`)"
+      - "traefik.http.routers.evaluator.entrypoints=websecure"
+      - "traefik.http.routers.evaluator.tls=true"
+      - "traefik.http.routers.evaluator.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.evaluator.loadbalancer.server.port=8000"
+    networks:
+      - competition-net
+      - traefik-net
 
-  streamlit:
-    build: .
-    ports:
-      - "8501:8501"
-    environment:
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-    volumes:
-      - .:/app
-    command: streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+networks:
+  competition-net:
+  traefik-net:
+    external: true
