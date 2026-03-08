@@ -40,10 +40,17 @@ class APIBackend:
         github_token = os.environ.get("GITHUB_TOKEN")
         self.adapter = ExperienceScoreAdapter()
         
-        if gemini_api_key and github_token:
+        # Diagnostic logging for environment variables
+        if not gemini_api_key:
+            print("❌ Error: Missing GEMINI_API_KEY in environment.")
+        if not github_token:
+            print("⚠️ Warning: Missing GITHUB_TOKEN in environment. API may be rate limited or fail to access private repos.")
+        elif len(github_token.strip().strip('"').strip("'")) < 10:
+            print(f"⚠️ Warning: GITHUB_TOKEN looks invalid or too short ({len(github_token)} chars).")
+
+        if gemini_api_key:
             self.analyzer_agent = GitHubAnalyzerAgent(gemini_api_key, github_token)
         else:
-            print("Warning: Missing GEMINI_API_KEY or GITHUB_TOKEN in env.")
             self.analyzer_agent = None
 
     def connect_to_db(self):

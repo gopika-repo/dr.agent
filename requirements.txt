@@ -13,3 +13,4 @@ fastapi
 uvicorn
 pymongo
 google-cloud-storage
+python-multipart

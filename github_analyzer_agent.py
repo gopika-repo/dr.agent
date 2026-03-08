@@ -16,23 +16,35 @@ class GitHubAnalyzerAgent:
     def __init__(self, gemini_api_key: str, github_token: str):
         """Initialize the analyzer agent with API keys"""
         self.gemini_api_key = gemini_api_key
+        
+        # Clean the token: strip whitespace and quotes
+        if github_token:
+            github_token = github_token.strip().strip('"').strip("'")
         self.github_token = github_token
         
         # Configure Gemini
         genai.configure(api_key=gemini_api_key)
         
         # Initialize Gemini model
-        self.model = genai.GenerativeModel('gemini-2.5-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash')  # Using flash for better performance
         
         # Initialize scoring engine
         self.scoring_engine = RealScoringEngine()
         
         # GitHub API configuration
         self.github_api_url = "https://api.github.com"
+        
+        # Base headers
         self.headers = {
-            "Authorization": f"token {github_token}",
             "Accept": "application/vnd.github.v3+json"
         }
+        
+        # Only add Authorization if token looks valid
+        if self.github_token and len(self.github_token) > 10:
+            self.headers["Authorization"] = f"token {self.github_token}"
+            print(f"✅ GitHub token loaded ({len(self.github_token)} chars)")
+        else:
+            print("⚠️ GitHub token missing or invalid - using unauthorized access (rate limits will apply)")
     
     def analyze_repository(self, github_repo: str, github_project_name: str, 
                           eval_criteria: str, skills: str, challenge_id: str = None, 
@@ -163,10 +175,17 @@ class GitHubAnalyzerAgent:
             print(f"📦 Downloading repository zipball for {owner}/{repo}...")
             # GitHub archive link for default branch
             api_url = f"{self.github_api_url}/repos/{owner}/{repo}/zipball"
+            
+            # Using stream=True for large files
             response = requests.get(api_url, headers=self.headers, timeout=60, stream=True)
             
             if response.status_code != 200:
                 print(f"❌ Failed to download zipball: {response.status_code}")
+                if response.status_code == 401:
+                    print("🚨 401 UNAUTHORIZED: Check if GITHUB_TOKEN is valid, not expired, and has 'repo' permissions.")
+                    print("💡 Try updating GITHUB_TOKEN in your .env or environment variables.")
+                elif response.status_code == 404:
+                    print(f"🚨 404 NOT FOUND: Repository {owner}/{repo} might be private or doesn't exist.")
                 return None
 
             # Read zip into memory
