@@ -717,7 +717,9 @@ def _s12_commits(commit_data):
     el = _heading("TOTAL NUMBER OF COMMITS")
     if not commit_data or not commit_data.get('fetched', False):
         err = commit_data.get('error', 'Commit data could not be fetched') if commit_data else 'No commit data provided'
-        raise RuntimeError(f"Section 'Total Commits': {err}")
+        # Improved robustness: show warning instead of crashing
+        el.append(Paragraph(f"<i>Note: {err}. Real-time commit tracking metrics are unavailable for this report.</i>", STYLES['body']))
+        el.append(_sp()); return el
     total = commit_data.get('total', 0)
     contribs = commit_data.get('contributors_count', 0)
     pattern = commit_data.get('pattern', 'Unknown')
@@ -790,11 +792,16 @@ def _s14_repo_stats(ev, repo_analysis, commit_data):
     sd = rd.get('scoring_details', {}); ts = ps.get('tech_stack', [])
     if not isinstance(sd, dict): sd = {}
     rs = repo_analysis.get('repo_stats', {}) if isinstance(repo_analysis, dict) else {}
-    if not commit_data:
-        raise RuntimeError("Section 'Repository Statistics': commit_data is required but was not provided")
-    if not rs:
-        raise RuntimeError("Section 'Repository Statistics': repo_stats are missing from repo_analysis")
-    total_commits = commit_data.get('total', 0)
+    
+    # Robustness: use defaults if commit_data missing
+    if not commit_data or not isinstance(commit_data, dict):
+        commit_data = {"total": "N/A", "pattern": "N/A"}
+        
+    # Robustness: use defaults if repo_stats missing
+    if not rs or not isinstance(rs, dict):
+        rs = {"stars": 0, "forks": 0, "total_files": "N/A", "readme_quality_score": "N/A"}
+        
+    total_commits = commit_data.get('total', 'N/A')
     pattern = commit_data.get('pattern', 'Unknown')
     stars = rs.get('stars', 0)
     forks = rs.get('forks', 0)
