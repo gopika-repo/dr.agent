@@ -190,6 +190,51 @@ class APIBackend:
             print(f"[DB] Error fetching hackathon details: {e}")
             return None
 
+    def get_specific_challenge_details(self, challenge_id: str):
+        """Fetch challenge details specifically from hidevs_foundations.challenges"""
+        config = dotenv_values(".env")
+        mongo_uri = config.get("MONGO_URI")
+        
+        if not mongo_uri:
+            print("Warning: MONGO_URI not found in .env")
+            return None
+            
+        try:
+            client = MongoClient(mongo_uri)
+            db = client.get_database("hidevs_foundations")
+            
+            from bson import ObjectId
+            query = {
+                "$or": [
+                    {"_id": ObjectId(challenge_id) if len(challenge_id) == 24 else None},
+                    {"challenge_id": challenge_id},
+                    {"hackathon_id": challenge_id}
+                ]
+            }
+            
+            challenge = db.challenges.find_one(query)
+            
+            if not challenge:
+                print(f"[DB] No challenge found for ID: {challenge_id} in hidevs_foundations.challenges")
+                return None
+                
+            print(f"[DB] Found challenge: {challenge.get('title')}")
+            
+            # Standardize fields based on schema
+            tech_list = challenge.get("technologies", [])
+            skills_str = ", ".join(tech_list) if isinstance(tech_list, list) else str(tech_list)
+            
+            return {
+                "id": str(challenge.get("_id")),
+                "title": challenge.get("title", "Unknown Challenge"),
+                "eval_criteria": challenge.get("evaluation", ""),
+                "skills": skills_str,
+                "difficulty": challenge.get("difficulty", "intermediate")
+            }
+        except Exception as e:
+            print(f"[DB] Error fetching challenge details: {e}")
+            return None
+
 backend = None
 
 @app.on_event("startup")
@@ -589,6 +634,176 @@ async def evaluate_hackathon_batch(
         return {
             "status": "success",
             "hackathon_title": project_name,
+            "total_evaluated": len(results),
+            "results": results
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/challenge_single")
+async def challenge_single(
+    challenge_id: str = Form(...),
+    github_url: str = Form(...),
+    difficulty: str = Form(None),
+    experience_level: str = Form("industry")
+):
+    """
+    Evaluates a single repository for a challenge.
+    Fetches criteria from hidevs_foundations.challenges.
+    DOES NOT store PDF or evaluation results in any DB.
+    """
+    print(f"Received challenge evaluation request for: {github_url} (Challenge ID: {challenge_id})")
+    if not backend.analyzer_agent:
+        return {"status": "error", "message": "Analyzer agent not initialized."}
+
+    try:
+        # Fetch challenge details
+        challenge = backend.get_specific_challenge_details(challenge_id)
+        if not challenge:
+            return {"status": "error", "message": f"Challenge with ID {challenge_id} not found."}
+            
+        project_name = challenge["title"]
+        eval_criteria = challenge["eval_criteria"]
+        skills = challenge["skills"]
+        # Use provided difficulty or fallback to DB value
+        final_difficulty = difficulty or challenge["difficulty"]
+
+        print(f"[Challenge] Running analysis for {project_name}...")
+        
+        analysis_result = backend.analyzer_agent.analyze_repository(
+            github_repo=github_url,
+            github_project_name=project_name,
+            eval_criteria=eval_criteria,
+            skills=skills,
+            challenge_id=challenge_id,
+            difficulty=final_difficulty
+        )
+        
+        if analysis_result.get("status") == "error":
+            return {"status": "error", "message": analysis_result.get("message")}
+            
+        gemini_evaluation = analysis_result.get("data", {}).get("final_report", {})
+        adapted_evaluation = backend.adapter.adapt_scores(gemini_evaluation, experience_level)
+        
+        # Fetch GitHub Stats & Commits
+        owner, repo = backend.github_client.extract_owner_repo(github_url)
+        commit_data = {"fetched": False}
+        repo_stats = {"fetched": False}
+        if owner and repo:
+            try:
+                commit_data = backend.github_client.get_commit_data(owner, repo)
+                repo_stats = backend.github_client.get_repo_stats(owner, repo)
+            except Exception: pass
+
+        # Add metadata for response
+        adapted_evaluation["repo_url"] = github_url
+        adapted_evaluation["challenge_title"] = project_name
+        adapted_evaluation["commit_data"] = commit_data
+        adapted_evaluation["repo_stats"] = repo_stats
+        
+        return {
+            "status": "success",
+            "data": adapted_evaluation
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/challenge_batch")
+async def challenge_batch(
+    challenge_id: str = Form(...),
+    difficulty: str = Form(None),
+    experience_level: str = Form("industry"),
+    file: UploadFile = File(...)
+):
+    """
+    Evaluates multiple repositories from a CSV for a challenge.
+    Fetches criteria from hidevs_foundations.challenges.
+    Returns all results in the response without storing them.
+    """
+    print(f"Received challenge batch evaluation request for {file.filename}")
+    if not backend.analyzer_agent:
+        return {"status": "error", "message": "Analyzer agent not initialized."}
+
+    try:
+        # Fetch challenge details
+        challenge = backend.get_specific_challenge_details(challenge_id)
+        if not challenge:
+            return {"status": "error", "message": f"Challenge with ID {challenge_id} not found."}
+            
+        project_name = challenge["title"]
+        eval_criteria = challenge["eval_criteria"]
+        skills = challenge["skills"]
+        final_difficulty = difficulty or challenge["difficulty"]
+
+        # Read CSV
+        content = await file.read()
+        text = content.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(text))
+        
+        url_column = None
+        for field in reader.fieldnames or []:
+            if field and ("github" in field.lower() or "url" in field.lower() or "repo" in field.lower()):
+                url_column = field
+                break
+        
+        if not url_column:
+            url_column = "github_url"
+
+        results = []
+        for row in reader:
+            repo_url = row.get(url_column)
+            if not repo_url:
+                continue
+                
+            print(f"[Batch] Analyzing {repo_url}...")
+            try:
+                analysis_result = backend.analyzer_agent.analyze_repository(
+                    github_repo=repo_url,
+                    github_project_name=project_name,
+                    eval_criteria=eval_criteria,
+                    skills=skills,
+                    challenge_id=challenge_id,
+                    difficulty=final_difficulty
+                )
+                
+                if analysis_result.get("status") == "success":
+                    gemini_evaluation = analysis_result.get("data", {}).get("final_report", {})
+                    adapted = backend.adapter.adapt_scores(gemini_evaluation, experience_level)
+                    adapted["repo_url"] = repo_url
+                    
+                    # Fetch GitHub Stats
+                    owner, repo = backend.github_client.extract_owner_repo(repo_url)
+                    commit_data = {"fetched": False}
+                    repo_stats = {"fetched": False}
+                    if owner and repo:
+                        try:
+                            commit_data = backend.github_client.get_commit_data(owner, repo)
+                            repo_stats = backend.github_client.get_repo_stats(owner, repo)
+                        except Exception: pass
+                    
+                    adapted["commit_data"] = commit_data
+                    adapted["repo_stats"] = repo_stats
+                    results.append(adapted)
+                else:
+                    results.append({
+                        "repo_url": repo_url,
+                        "status": "error",
+                        "message": analysis_result.get("message")
+                    })
+            except Exception as e:
+                results.append({
+                    "repo_url": repo_url,
+                    "status": "error",
+                    "message": str(e)
+                })
+
+        return {
+            "status": "success",
+            "challenge_title": project_name,
             "total_evaluated": len(results),
             "results": results
         }
