@@ -3,7 +3,7 @@ import os
 import requests
 
 BASE_URL = os.getenv("BASE_URL", "https://evaluator.hidevs.xyz")
-HACKATHON_ID = os.getenv("HACKATHON_ID", "hackathon_general")
+HACKATHON_ID = os.getenv("HACKATHON_ID", "memory-over-models-2025")
 CHALLENGE_ID = os.getenv("CHALLENGE_ID", "challenge_023")
 
 print("=== TEST 1: /api/evaluate_hackathon_single ===")
@@ -11,7 +11,7 @@ resp = requests.post(
     f"{BASE_URL}/api/evaluate_hackathon_single",
     data={
         "hackathon_id": HACKATHON_ID,
-        "github_url": "https://github.com/octocat/Hello-World",
+        "github_url": "https://github.com/pallets/flask",
         "difficulty": "intermediate",
         "experience_level": "industry",
     },
@@ -61,7 +61,7 @@ resp2 = requests.post(
     f"{BASE_URL}/api/challenge_single",
     data={
         "challenge_id": CHALLENGE_ID,
-        "github_url": "https://github.com/octocat/Hello-World",
+        "github_url": "https://github.com/pallets/flask",
         "experience_level": "industry",
     },
     timeout=120,
