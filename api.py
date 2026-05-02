@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, Response
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import sys
 import csv
 import io
 import json
@@ -8,10 +9,26 @@ import requests
 from dotenv import dotenv_values
 from pymongo import MongoClient
 from dotenv import load_dotenv
+from pathlib import Path
+
+CURRENT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = CURRENT_DIR.parent
+for path in (CURRENT_DIR, ROOT_DIR):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
 from github_analyzer_agent import GitHubAnalyzerAgent
 from experience_adaptor import ExperienceScoreAdapter
 from pdf_service import trigger_pdf_generation_flow
 from utils.github_client import GitHubClient
+from candidate_pipeline.repo_cloner import clone_repository as clone_repo, cleanup_repository as cleanup_repo
+from candidate_pipeline.file_scanner import scan_repository
+from candidate_pipeline.tech_detector import detect_technologies
+from candidate_pipeline.code_quality import analyze_code_quality
+from candidate_pipeline.readme_analyzer import analyze_readme
+from candidate_pipeline.commit_analyzer import analyze_commits
+from candidate_pipeline.scoring import calculate_scores
+from candidate_pipeline.gemini_evaluator import evaluate_with_gemini
 
 load_dotenv()
 
@@ -471,6 +488,90 @@ async def download_proxy(url: str):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+def _build_hackathon_pipeline_payload(hackathon: dict) -> dict:
+    """Normalize hackathon metadata into the structure expected by candidate_pipeline.scoring."""
+    return {
+        "technologies": hackathon.get("technologies") or hackathon.get("required_tech") or hackathon.get("skills") or [],
+        "evaluation": hackathon.get("evaluation") or hackathon.get("eval_criteria") or "",
+        "bonusTech": hackathon.get("bonusTech") or [],
+    }
+
+
+def _run_hackathon_pipeline(repo_url: str, hackathon_id: str, hackathon: dict, experience_level: str) -> dict:
+    """Run the local candidate_pipeline analysis for a single repository."""
+    owner, repo = backend.github_client.extract_owner_repo(repo_url)
+    if not owner or not repo:
+        raise ValueError("Invalid GitHub repository URL.")
+
+    repo_path = None
+    try:
+        repo_path = clone_repo(repo_url)
+        if not repo_path:
+            raise RuntimeError("Unable to clone repository.")
+
+        analysis = {
+            "repo_url": repo_url,
+            "hackathon_id": hackathon_id,
+            "hackathon": hackathon,
+            "file_scanner": scan_repository(repo_path),
+            "technologies": detect_technologies(repo_path),
+            "code_quality": analyze_code_quality(repo_path),
+            "readme": analyze_readme(repo_path),
+            "commits": analyze_commits(repo_path),
+        }
+        analysis["tech_detection"] = analysis["technologies"]
+
+        hackathon_db_data = dict(hackathon)
+        hackathon_db_data.setdefault("technologies", hackathon_db_data.get("technologies") or hackathon_db_data.get("required_tech") or hackathon_db_data.get("skills") or [])
+        hackathon_db_data.setdefault("evaluation", hackathon_db_data.get("evaluation") or hackathon_db_data.get("eval_criteria") or "")
+        hackathon_db_data.setdefault("bonusTech", hackathon_db_data.get("bonusTech") or [])
+
+        component_scores, category_scores, score_metadata = calculate_scores(
+            analysis,
+            hackathon_id=hackathon_id,
+            hackathon_db_data=hackathon_db_data,
+        )
+
+        analysis["scores"] = {
+            "component_scores": component_scores,
+            "raw_category_scores": category_scores,
+            "category_scores": category_scores,
+            "metadata": score_metadata,
+        }
+
+        try:
+            adapted_scores = backend.adapter.adapt_scores(
+                {"scores": {name: {"score": score} for name, score in analysis["scores"]["category_scores"].items()}},
+                experience_level,
+            )
+            adjusted_category_scores = {
+                name: data.get("score", analysis["scores"]["category_scores"].get(name, 0))
+                for name, data in adapted_scores.get("adjusted_scores", {}).items()
+            }
+            analysis["scores"]["experience_adjusted"] = adapted_scores
+            analysis["scores"]["category_scores"] = adjusted_category_scores or analysis["scores"]["category_scores"]
+            analysis["scores"]["overall_score"] = adapted_scores.get("overall_score", 0)
+        except Exception as adapter_error:
+            analysis["scores"]["experience_adjusted_error"] = str(adapter_error)
+
+        analysis["gemini_eval"] = evaluate_with_gemini(analysis, hackathon_id)
+
+        commit_data = {"fetched": False}
+        repo_stats = {"fetched": False}
+        try:
+            commit_data = backend.github_client.get_commit_data(owner, repo)
+            repo_stats = backend.github_client.get_repo_stats(owner, repo)
+        except Exception as e:
+            print(f"⚠️ Error fetching GitHub stats for {repo_url}: {e}")
+
+        analysis["commit_data"] = commit_data
+        analysis["repo_stats"] = repo_stats
+        return analysis
+    finally:
+        if repo_path:
+            cleanup_repo(repo_path)
+
 @app.post("/api/evaluate_hackathon_single")
 async def evaluate_hackathon_single(
     hackathon_id: str = Form(...),
@@ -484,8 +585,6 @@ async def evaluate_hackathon_single(
     DOES NOT store PDF or evaluation results in any DB.
     """
     print(f"Received hackathon evaluation request for: {github_url} (Platform ID: {hackathon_id})")
-    if not backend.analyzer_agent:
-        return {"status": "error", "message": "Analyzer agent not initialized."}
 
     try:
         # Fetch hackathon details directly from hidevs_foundations
@@ -493,50 +592,13 @@ async def evaluate_hackathon_single(
         
         if not hackathon:
             return {"status": "error", "message": f"Hackathon with ID {hackathon_id} not found."}
-            
-        project_name = hackathon["title"]
-        eval_criteria = hackathon["eval_criteria"]
-        skills = hackathon["skills"]
+        analysis = _run_hackathon_pipeline(github_url, hackathon_id, hackathon, experience_level)
+        analysis["hackathon_title"] = hackathon.get("title", "Unknown Hackathon")
+        analysis["difficulty"] = difficulty
 
-        print(f"[Hackathon] Running analysis for {project_name}...")
-        
-        analysis_result = backend.analyzer_agent.analyze_repository(
-            github_repo=github_url,
-            github_project_name=project_name,
-            eval_criteria=eval_criteria,
-            skills=skills,
-            challenge_id=hackathon_id,
-            difficulty=difficulty
-        )
-        
-        if analysis_result.get("status") == "error":
-            return {"status": "error", "message": analysis_result.get("message")}
-            
-        gemini_evaluation = analysis_result.get("data", {}).get("final_report", {})
-        adapted_evaluation = backend.adapter.adapt_scores(gemini_evaluation, experience_level)
-        
-        # Fetch Commit & Repo Stats for JSON response
-        owner, repo = backend.github_client.extract_owner_repo(github_url)
-        commit_data = {"fetched": False}
-        repo_stats = {"fetched": False}
-        
-        if owner and repo:
-            print(f"[GitHub] Fetching stats/commits for {owner}/{repo}...")
-            try:
-                commit_data = backend.github_client.get_commit_data(owner, repo)
-                repo_stats = backend.github_client.get_repo_stats(owner, repo)
-            except Exception as e:
-                print(f"⚠️ Error fetching GitHub stats: {e}")
-
-        # Add metadata for response
-        adapted_evaluation["repo_url"] = github_url
-        adapted_evaluation["hackathon_title"] = project_name
-        adapted_evaluation["commit_data"] = commit_data
-        adapted_evaluation["repo_stats"] = repo_stats
-        
         return {
             "status": "success",
-            "data": adapted_evaluation
+            "data": analysis
         }
     except Exception as e:
         import traceback
@@ -556,18 +618,12 @@ async def evaluate_hackathon_batch(
     Returns all results in the response without storing them.
     """
     print(f"Received hackathon batch evaluation request for {file.filename}")
-    if not backend.analyzer_agent:
-        return {"status": "error", "message": "Analyzer agent not initialized."}
 
     try:
         # Fetch hackathon details
         hackathon = backend.get_hackathon_details(hackathon_id)
         if not hackathon:
             return {"status": "error", "message": f"Hackathon with ID {hackathon_id} not found."}
-            
-        project_name = hackathon["title"]
-        eval_criteria = hackathon["eval_criteria"]
-        skills = hackathon["skills"]
 
         # Read CSV
         content = await file.read()
@@ -591,39 +647,9 @@ async def evaluate_hackathon_batch(
                 
             print(f"[Batch] Analyzing {repo_url}...")
             try:
-                analysis_result = backend.analyzer_agent.analyze_repository(
-                    github_repo=repo_url,
-                    github_project_name=project_name,
-                    eval_criteria=eval_criteria,
-                    skills=skills,
-                    challenge_id=hackathon_id,
-                    difficulty=difficulty
-                )
-                
-                if analysis_result.get("status") == "success":
-                    gemini_evaluation = analysis_result.get("data", {}).get("final_report", {})
-                    adapted = backend.adapter.adapt_scores(gemini_evaluation, experience_level)
-                    adapted["repo_url"] = repo_url
-                    
-                    # Fetch Commit & Repo Stats for each item in batch
-                    owner, repo = backend.github_client.extract_owner_repo(repo_url)
-                    commit_data = {"fetched": False}
-                    repo_stats = {"fetched": False}
-                    if owner and repo:
-                        try:
-                            commit_data = backend.github_client.get_commit_data(owner, repo)
-                            repo_stats = backend.github_client.get_repo_stats(owner, repo)
-                        except Exception: pass
-                    
-                    adapted["commit_data"] = commit_data
-                    adapted["repo_stats"] = repo_stats
-                    results.append(adapted)
-                else:
-                    results.append({
-                        "repo_url": repo_url,
-                        "status": "error",
-                        "message": analysis_result.get("message")
-                    })
+                analysis = _run_hackathon_pipeline(repo_url, hackathon_id, hackathon, experience_level)
+                analysis["difficulty"] = difficulty
+                results.append(analysis)
             except Exception as e:
                 results.append({
                     "repo_url": repo_url,
@@ -633,7 +659,7 @@ async def evaluate_hackathon_batch(
 
         return {
             "status": "success",
-            "hackathon_title": project_name,
+            "hackathon_title": hackathon.get("title", "Unknown Hackathon"),
             "total_evaluated": len(results),
             "results": results
         }

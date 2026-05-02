@@ -8,7 +8,7 @@ class Settings:
     GITHUB_API_URL = 'https://api.github.com'
     
     # Gemini Configuration
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     
     # Application Configuration
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB

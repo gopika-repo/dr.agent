@@ -12,6 +12,68 @@ Production-ready, objective, evidence-based GitHub Repository Evaluation Agent f
 - **LLM-Powered Explanations**: Uses Gemini 1.5 Pro/Flash for detailed analysis
 - **Industry Benchmarking**: Compares against intern, entry-level, and strong hire standards
 
+## Hackathon Evaluation Pipeline
+
+The hackathon endpoints now use the standalone `candidate_pipeline/` flow instead of the older GitHub-API-only analyzer. For each repository, the service:
+
+1. Validates the GitHub URL and fetches the hackathon record from MongoDB.
+2. Clones the repository to a temporary local folder.
+3. Runs repository analysis modules locally:
+   - `scan_repository()` for file and structure metrics
+   - `detect_technologies()` for stack detection
+   - `analyze_code_quality()` for AST and quality checks
+   - `analyze_readme()` for documentation scoring
+   - `analyze_commits()` for git history metrics
+4. Calculates scores with `calculate_scores()` using hackathon criteria from MongoDB.
+5. Applies experience-level score adaptation.
+6. Generates a Gemini-backed narrative evaluation with `evaluate_with_gemini()`.
+7. Fetches GitHub commit and repository statistics as additional response metadata.
+8. Cleans up the temporary clone with `cleanup_repository()` to avoid disk growth.
+
+### Required Environment Variables
+
+The pipeline expects these environment variables at runtime:
+
+- `GEMINI_API_KEY` - required for Gemini evaluation responses
+- `GITHUB_TOKEN` - used for GitHub API metadata calls and rate-limit protection
+- `MONGO_URI` - required to fetch hackathon details from MongoDB
+
+### `/api/evaluate_hackathon_single` Response Schema
+
+The single-hackathon endpoint returns a JSON payload shaped like this:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "repo_url": "https://github.com/org/repo",
+    "hackathon_id": "hackathon_general",
+    "hackathon": {},
+    "hackathon_title": "Example Hackathon",
+    "difficulty": "intermediate",
+    "file_scanner": {},
+    "technologies": {},
+    "tech_detection": {},
+    "code_quality": {},
+    "readme": {},
+    "commits": {},
+    "scores": {
+      "component_scores": {},
+      "raw_category_scores": {},
+      "category_scores": {},
+      "metadata": {},
+      "experience_adjusted": {},
+      "overall_score": 0
+    },
+    "gemini_eval": {},
+    "commit_data": {},
+    "repo_stats": {}
+  }
+}
+```
+
+The exact contents of `scores`, `gemini_eval`, `commit_data`, and `repo_stats` depend on the repository and the available GitHub/MongoDB data, but the keys above are always present in successful responses.
+
 ## Architecture
 
 ### 1. UI Layer (Streamlit)
