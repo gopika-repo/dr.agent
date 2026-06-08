@@ -21,6 +21,9 @@ st.set_page_config(
 from dotenv import load_dotenv
 load_dotenv()
 
+def _gemini_model_label() -> str:
+    return os.environ.get("GEMINI_MODEL", "").strip() or "Gemini"
+
 # Import the GitHub Analyzer Agent
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -562,6 +565,9 @@ class GitHubRepoEvaluator:
             if not gemini_api_key:
                 st.error("❌ Missing GEMINI_API_KEY in .env file")
                 return False
+            if not os.environ.get("GEMINI_MODEL"):
+                st.error("❌ Missing GEMINI_MODEL in .env file")
+                return False
             if not github_token:
                 st.error("❌ Missing GITHUB_TOKEN in .env file")
                 return False
@@ -594,12 +600,13 @@ class GitHubRepoEvaluator:
     
     def display_header(self):
         """Display application header"""
-        st.markdown("""
+        model_label = _gemini_model_label()
+        st.markdown(f"""
         <div class="main-header">
             <h2 style="margin: 0; font-size: 2rem;">🏆 GitHub Repository Evaluator</h2>
             <p style="margin: 8px 0; font-size: 1rem; opacity: 0.95;">AI-Powered Technical Assessment Platform</p>
             <div style="display: flex; justify-content: center; gap: 10px; margin-top: 10px; font-size: 0.8rem;">
-                <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 15px;">🤖 Gemini 2.5 Pro</span>
+                <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 15px;">🤖 {model_label}</span>
                 <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 15px;">Real Code Analysis</span>
                 <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 15px;">Experience-Aware Scoring</span>
                 <span style="background: rgba(255,255,255,0.2); padding: 4px 10px; border-radius: 15px;">Challenge Specific</span>
@@ -852,7 +859,7 @@ class GitHubRepoEvaluator:
             challenge = st.session_state.selected_challenge
             experience_level = st.session_state.experience_level
             
-            with st.status("🔄 Running AI-Powered Analysis with Gemini 2.5 Pro...", expanded=True) as status:
+            with st.status(f"🔄 Running AI-Powered Analysis with {_gemini_model_label()}...", expanded=True) as status:
                 status.write("1. 📥 Analyzing repository with Gemini AI...")
                 
                 # Use Gemini API to analyze the repository
@@ -866,7 +873,7 @@ class GitHubRepoEvaluator:
                 if analysis_result.get("status") == "error":
                     raise Exception(f"Analysis failed: {analysis_result.get('message')}")
                 
-                status.write("2. 🤖 Gemini 2.5 Pro evaluation complete")
+                status.write(f"2. 🤖 {_gemini_model_label()} evaluation complete")
                 
                 # Extract the evaluation from Gemini
                 gemini_evaluation = analysis_result.get("data", {}).get("final_report", {})
@@ -919,7 +926,7 @@ class GitHubRepoEvaluator:
             st.markdown(f"**Experience:** {exp_display}")
         with col4:
             st.markdown(f"**Analyzed:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-            st.markdown('<span class="gemini-badge">Powered by Gemini 2.5 Pro</span>', unsafe_allow_html=True)
+            st.markdown(f'<span class="gemini-badge">Powered by {_gemini_model_label()}</span>', unsafe_allow_html=True)
         
         st.markdown("---")
         
@@ -1677,17 +1684,19 @@ RECOMMENDATION: {'✅ Hire' if adjusted_score >= context.get('benchmark_good', 6
             1. Install dependencies: `pip install streamlit google-generativeai pygithub python-dotenv requests`
             2. Create `.env` file with:
                - GEMINI_API_KEY=your_key_here
+               - GEMINI_MODEL=gemini-3.5-flash
                - GITHUB_TOKEN=your_token_here
             3. Restart the application
             """)
             return
         
-        if not os.environ.get("GEMINI_API_KEY") or not os.environ.get("GITHUB_TOKEN"):
+        if not os.environ.get("GEMINI_API_KEY") or not os.environ.get("GEMINI_MODEL") or not os.environ.get("GITHUB_TOKEN"):
             st.error("""
             ⚠️ **API Keys Missing:**
             Please create a `.env` file in the project root with:
             ```
             GEMINI_API_KEY=your_gemini_api_key_here
+            GEMINI_MODEL=gemini-3.5-flash
             GITHUB_TOKEN=your_github_token_here
             ```
             """)
@@ -1705,12 +1714,13 @@ RECOMMENDATION: {'✅ Hire' if adjusted_score >= context.get('benchmark_good', 6
             self.display_results()
         
         st.markdown("---")
-        st.markdown("""
+        model_label = _gemini_model_label()
+        st.markdown(f"""
         <div style='text-align: center; color: #6b7280; font-size: 11px; padding: 15px;'>
             <div style="font-size: 12px; font-weight: 600; color: #4f46e5; margin-bottom: 5px;">
                 GitHub Repository Evaluator v4.0 - REAL SCORING
             </div>
-            <div>Powered by <span class="gemini-badge">Gemini 2.5 Pro</span> • Real Code Analysis • Experience-Aware Scoring</div>
+            <div>Powered by <span class="gemini-badge">{model_label}</span> • Real Code Analysis • Experience-Aware Scoring</div>
             <div style="margin-top: 5px; font-size: 10px;">✅ No mock data • All calculations based on actual repository analysis</div>
         </div>
         """, unsafe_allow_html=True)

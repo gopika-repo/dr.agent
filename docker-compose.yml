@@ -4,6 +4,7 @@ services:
     container_name: competition-analyser-api
     environment:
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - GEMINI_MODEL=${GEMINI_MODEL}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - MONGO_URI=${MONGO_URI}
       - GCP_BUCKET_NAME=${GCP_BUCKET_NAME}

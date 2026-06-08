@@ -10,6 +10,7 @@ import requests
 import google.generativeai as genai
 import time
 from evaluation_logic import RealScoringEngine
+from config.settings import get_gemini_model
 
 
 class GitHubAnalyzerAgent:
@@ -25,8 +26,8 @@ class GitHubAnalyzerAgent:
         # Configure Gemini
         genai.configure(api_key=gemini_api_key)
         
-        # Initialize Gemini model
-        self.model = genai.GenerativeModel('gemini-2.0-flash')  # Using flash for better performance
+        # Initialize Gemini model from environment
+        self.model = genai.GenerativeModel(get_gemini_model())
         
         # Initialize scoring engine
         self.scoring_engine = RealScoringEngine()

@@ -55,12 +55,15 @@ class APIBackend:
         self.db = self.connect_to_db()
         
         gemini_api_key = os.environ.get("GEMINI_API_KEY")
+        gemini_model = os.environ.get("GEMINI_MODEL")
         github_token = os.environ.get("GITHUB_TOKEN")
         self.adapter = ExperienceScoreAdapter()
         
         # Diagnostic logging for environment variables
         if not gemini_api_key:
             print("❌ Error: Missing GEMINI_API_KEY in environment.")
+        if not gemini_model:
+            print("❌ Error: Missing GEMINI_MODEL in environment.")
         if not github_token:
             print("⚠️ Warning: Missing GITHUB_TOKEN in environment. API may be rate limited or fail to access private repos.")
         elif len(github_token.strip().strip('"').strip("'")) < 10:

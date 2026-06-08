@@ -3,26 +3,22 @@ import google.generativeai as genai
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import json
+from config.settings import get_gemini_model
 
 class ExplanationEngine:
     def __init__(self, api_key: str):
         """Initialize with Gemini API key"""
         genai.configure(api_key=api_key)
-        self.supported_models = [
-            "gemini-2.0-flash",
-            "gemini-2.0-pro",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash"
-        ]
     
     def analyze(self, analysis_results: Dict, evaluation_results: Dict, 
-                challenge: Dict, model_name: str = "gemini-2.5-flash") -> Dict:
+                challenge: Dict) -> Dict:
         """Generate detailed analysis using Gemini AI"""
         
-        # Validate model
-        if model_name not in self.supported_models:
-            model_name = "gemini-2.5-flash"
-        
+        try:
+            model_name = get_gemini_model()
+        except ValueError:
+            return self._analyze_rules_based(analysis_results, evaluation_results, challenge)
+
         try:
             # Prepare prompt for Gemini
             prompt = self._create_analysis_prompt(analysis_results, evaluation_results, challenge)

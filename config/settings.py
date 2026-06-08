@@ -9,6 +9,15 @@ class Settings:
     
     # Gemini Configuration
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+    GEMINI_MODEL = os.getenv('GEMINI_MODEL')
+
+
+def get_gemini_model() -> str:
+    """Return the Gemini model name from GEMINI_MODEL env var."""
+    model = (os.getenv('GEMINI_MODEL') or '').strip()
+    if not model:
+        raise ValueError('GEMINI_MODEL environment variable is required')
+    return model
     
     # Application Configuration
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB

@@ -15,22 +15,13 @@ try:
 except ImportError:
     genai = None
 
-
-# Default model (supports fallback to other models if needed)
-DEFAULT_MODEL = "gemini-2.0-flash"
-SUPPORTED_MODELS = [
-    "gemini-2.0-flash",
-    "gemini-2.0-pro",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash"
-]
+from config.settings import get_gemini_model
 
 
 def evaluate_with_gemini(
     analysis_dict: Dict,
     challenge_id: str,
     gemini_api_key: Optional[str] = None,
-    model_name: str = DEFAULT_MODEL,
     max_file_samples: int = 5
 ) -> Dict:
     """
@@ -47,7 +38,6 @@ def evaluate_with_gemini(
         challenge_id: Challenge identifier (e.g., 'challenge_023')
         gemini_api_key: Optional Gemini API key. If not provided, reads from
                        environment variable GEMINI_API_KEY
-        model_name: Gemini model to use (default: gemini-2.0-flash)
         max_file_samples: Maximum number of files to include in prompt
         
     Returns:
@@ -87,10 +77,11 @@ def evaluate_with_gemini(
             'error': 'GEMINI_API_KEY not provided and not set in environment variables'
         }
     
-    # Validate model
-    if model_name not in SUPPORTED_MODELS:
-        model_name = DEFAULT_MODEL
-    
+    try:
+        model_name = get_gemini_model()
+    except ValueError as e:
+        return {'error': str(e)}
+
     try:
         # Configure Gemini API
         genai.configure(api_key=api_key)

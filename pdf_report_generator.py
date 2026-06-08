@@ -16,6 +16,7 @@ from reportlab.platypus import (
 )
 from reportlab.graphics.shapes import Drawing, Rect, String
 import google.generativeai as genai
+from config.settings import get_gemini_model
 
 # ═══════════════════════ CONSTANTS ═══════════════════════════════
 PAGE_W, PAGE_H = A4
@@ -90,10 +91,10 @@ def _safe(text, max_len=0):
     if max_len and len(s) > max_len: s = s[:max_len] + "..."
     return s
 
-def _gemini(prompt, model_name="gemini-2.5-pro", _retries=1):
+def _gemini(prompt, _retries=1):
     """Call Gemini with retry. Raises RuntimeError if empty after retries."""
     try:
-        m = genai.GenerativeModel(model_name)
+        m = genai.GenerativeModel(get_gemini_model())
         for attempt in range(_retries + 1):
             r = m.generate_content(prompt, generation_config=genai.types.GenerationConfig(
                 temperature=0.2, max_output_tokens=2048))
@@ -107,13 +108,13 @@ def _gemini(prompt, model_name="gemini-2.5-pro", _retries=1):
     except Exception as e:
         raise RuntimeError(f"Gemini API error: {e}")
 
-def _gemini_json(prompt, required_keys, model_name="gemini-2.5-pro", _retries=1):
+def _gemini_json(prompt, required_keys, _retries=1):
     """Call Gemini expecting JSON. Validates required_keys. Raises RuntimeError on failure."""
     json_prompt = prompt + "\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, no extra text. Just the JSON object."
     last_err = None
     for attempt in range(_retries + 1):
         try:
-            raw = _gemini(json_prompt, model_name=model_name)
+            raw = _gemini(json_prompt)
             # Strip markdown fences if present
             cleaned = raw.strip()
             if cleaned.startswith("```"):
