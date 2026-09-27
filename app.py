@@ -786,39 +786,65 @@ class GitHubRepoEvaluator:
             st.markdown(f"**Difficulty:** {challenge['difficulty'].upper()}")
     
     def display_repository_input(self):
-        """Display repository URL input"""
+        """Display repository input with support for hackathon_id *, github_url *, difficulty, and experience_level"""
         st.markdown('<p class="section-title">📂 Analyze Repository</p>', unsafe_allow_html=True)
         
-        col1, col2, col3 = st.columns([3, 1, 1])
-        
-        with col1:
-            repo_url = st.text_input(
-                "GitHub Repository URL",
-                value=st.session_state.repo_url,
-                placeholder="https://github.com/username/repository",
-                label_visibility="collapsed",
-                help="Enter a public GitHub repository URL"
-            )
-            
-            if repo_url != st.session_state.repo_url:
+        input_mode = st.radio(
+            "Input Mode",
+            options=["Standard Form (hackathon_id, github_url, difficulty, experience_level)", "Select Challenge Preset"],
+            horizontal=True,
+            key="input_mode"
+        )
+
+        if input_mode == "Standard Form (hackathon_id, github_url, difficulty, experience_level)":
+            col1, col2 = st.columns(2)
+            with col1:
+                hackathon_id = st.text_input(
+                    "Hackathon ID *",
+                    value=st.session_state.get('custom_hackathon_id', ''),
+                    placeholder="e.g. hackathon_001",
+                    help="Required: Enter unique hackathon or challenge ID"
+                )
+                st.session_state['custom_hackathon_id'] = hackathon_id
+
+                difficulty = st.selectbox(
+                    "Difficulty",
+                    options=["beginner", "intermediate", "advanced"],
+                    index=1,
+                    help="Optional: Select challenge difficulty"
+                )
+                st.session_state['difficulty'] = difficulty
+
+            with col2:
+                repo_url = st.text_input(
+                    "GitHub URL *",
+                    value=st.session_state.repo_url,
+                    placeholder="https://github.com/username/repository",
+                    help="Required: Enter public GitHub repository URL"
+                )
                 st.session_state.repo_url = repo_url
-            
-            if repo_url:
-                if self.validate_github_url(repo_url):
-                    st.success("✅ Valid GitHub URL")
-                else:
-                    st.error("❌ Invalid GitHub URL format")
-        
-        with col2:
-            exp_level = st.session_state.experience_level
-            exp_display = exp_level.replace("_", " ").title()
-            st.metric("Experience", exp_display, delta=None)
-        
-        with col3:
+
+                exp_options = ["1st_year", "2nd_year", "3rd_year", "4th_year", "fresher", "experienced_0_2", "senior", "industry"]
+                exp_index = exp_options.index(st.session_state.experience_level) if st.session_state.experience_level in exp_options else 4
+                exp_level = st.selectbox(
+                    "Experience Level",
+                    options=exp_options,
+                    index=exp_index,
+                    help="Optional: Target experience level"
+                )
+                st.session_state.experience_level = exp_level
+
+            valid_github = self.validate_github_url(repo_url) if repo_url else False
+            valid_hackathon = bool(hackathon_id.strip()) if hackathon_id else False
+
+            if repo_url and not valid_github:
+                st.error("❌ Invalid GitHub URL format")
+            if hackathon_id and valid_hackathon:
+                st.caption(f"Hackathon ID: `{hackathon_id.strip()}`")
+
             analyze_disabled = not (
-                st.session_state.selected_challenge and 
-                repo_url and 
-                self.validate_github_url(repo_url) and
+                valid_hackathon and
+                valid_github and
                 not st.session_state.is_analyzing and
                 ANALYZER_AVAILABLE
             )
@@ -830,17 +856,77 @@ class GitHubRepoEvaluator:
                 type="primary",
                 disabled=analyze_disabled,
                 use_container_width=True,
-                key="start_analysis"
+                key="start_analysis_custom"
             ):
                 st.session_state.is_analyzing = True
                 st.session_state.error_message = None
                 
+                # Set dummy selected challenge if needed for analysis runner
+                if not st.session_state.selected_challenge:
+                    st.session_state.selected_challenge = {
+                        "id": hackathon_id.strip(),
+                        "title": f"Hackathon ({hackathon_id.strip()})",
+                        "eval_criteria": "A. Technical Implementation (60 points) B. Functionality (25 points) C. Innovation (15 points)",
+                        "skills": "Python, General Software Development",
+                        "difficulty": difficulty
+                    }
                 try:
                     self.run_analysis(repo_url)
                 except Exception as e:
                     st.session_state.error_message = str(e)
                     st.session_state.is_analyzing = False
                     st.rerun()
+
+        else:
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                repo_url = st.text_input(
+                    "GitHub Repository URL *",
+                    value=st.session_state.repo_url,
+                    placeholder="https://github.com/username/repository",
+                    label_visibility="collapsed",
+                    help="Enter a public GitHub repository URL"
+                )
+                if repo_url != st.session_state.repo_url:
+                    st.session_state.repo_url = repo_url
+                if repo_url:
+                    if self.validate_github_url(repo_url):
+                        st.success("✅ Valid GitHub URL")
+                    else:
+                        st.error("❌ Invalid GitHub URL format")
+            
+            with col2:
+                exp_level = st.session_state.experience_level
+                exp_display = exp_level.replace("_", " ").title()
+                st.metric("Experience", exp_display, delta=None)
+            
+            with col3:
+                analyze_disabled = not (
+                    st.session_state.selected_challenge and 
+                    repo_url and 
+                    self.validate_github_url(repo_url) and
+                    not st.session_state.is_analyzing and
+                    ANALYZER_AVAILABLE
+                )
+                
+                analyze_text = "🚀 Analyzing..." if st.session_state.is_analyzing else "🚀 Start Analysis"
+                
+                if st.button(
+                    analyze_text,
+                    type="primary",
+                    disabled=analyze_disabled,
+                    use_container_width=True,
+                    key="start_analysis"
+                ):
+                    st.session_state.is_analyzing = True
+                    st.session_state.error_message = None
+                    
+                    try:
+                        self.run_analysis(repo_url)
+                    except Exception as e:
+                        st.session_state.error_message = str(e)
+                        st.session_state.is_analyzing = False
+                        st.rerun()
     
     def run_analysis(self, repo_url: str):
         """Run analysis using Gemini API and adapt scores based on experience"""
