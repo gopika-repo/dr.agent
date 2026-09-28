@@ -78,6 +78,45 @@ def analyze_code_quality(repo_path: str) -> Dict:
     }
     
     file_contents = []
+
+    # ---------------------------------------------------------
+    # Single-file evaluation support
+    # ---------------------------------------------------------
+    if repo_root.is_file():
+        file_path = str(repo_root)
+        file_name = repo_root.name.lower()
+
+        if file_name.endswith(".py"):
+            _analyze_python_file(
+                file_path,
+                metrics,
+                file_contents,
+            )
+
+        elif file_name.endswith(
+            (".js", ".ts", ".jsx", ".tsx")
+        ):
+            _analyze_js_file(
+                file_path,
+                metrics,
+                file_contents,
+            )
+
+        elif file_name.endswith(
+            (
+                ".java",
+                ".cpp",
+                ".c",
+                ".cs",
+                ".go",
+                ".rs",
+            )
+        ):
+            _analyze_generic_file(
+                file_path,
+                metrics,
+            )
+
     
     # Walk repository and analyze Python/JS/TS files
     for root, dirs, files in os.walk(repo_root):
@@ -96,6 +135,32 @@ def analyze_code_quality(repo_path: str) -> Dict:
             elif file_name.endswith(('.java', '.cpp', '.c', '.cs', '.go', '.rs')):
                 _analyze_generic_file(file_path, metrics)
     
+    # ---------------------------------------------------------
+    # Applicability check
+    #
+    # If the selected evaluation target contains no supported
+    # source code, code-quality scoring is not applicable.
+    # This prevents documentation/config files such as README.md
+    # from receiving an artificial code-quality score.
+    # ---------------------------------------------------------
+    if metrics["code_lines"] == 0:
+        return {
+            "applicable": False,
+            "reason": (
+                "No supported source-code files were found in the "
+                "selected evaluation target."
+            ),
+            "error_handling_score": 0,
+            "docstring_coverage": 0,
+            "type_hint_coverage": 0,
+            "design_patterns": [],
+            "comment_ratio": 0,
+            "total_functions": 0,
+            "total_classes": 0,
+            "code_duplication_score": 0,
+            "overall_quality_score": 0,
+        }
+
     # Calculate scores
     error_handling_score = _calculate_error_handling_score(metrics)
     docstring_coverage = _calculate_docstring_coverage(metrics)
@@ -113,6 +178,8 @@ def analyze_code_quality(repo_path: str) -> Dict:
     )
     
     return {
+        'applicable': True,
+        'reason': None,
         'error_handling_score': round(error_handling_score, 1),
         'docstring_coverage': round(docstring_coverage, 1),
         'type_hint_coverage': round(type_hint_coverage, 1),

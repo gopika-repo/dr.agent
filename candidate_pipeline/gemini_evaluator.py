@@ -805,9 +805,16 @@ def _create_evaluation_prompt(
                 "full_repo",
             ),
 
-        "target_folder":
+        "evaluation_target":
             analysis_dict.get(
-                "target_folder"
+                "evaluation_target",
+                "full_repo",
+            ),
+
+        "target_type":
+            analysis_dict.get(
+                "target_type",
+                "repository",
             ),
 
         "evaluation_criteria":
@@ -817,7 +824,7 @@ def _create_evaluation_prompt(
             required_tech_text,
 
 
-        "repository_metrics": {
+        "evaluation_target_metrics": {
 
             "total_files":
                 file_scan.get(
@@ -841,12 +848,62 @@ def _create_evaluation_prompt(
                 ),
         },
 
+        "repository_metrics": {
+
+            "total_files":
+                (
+                    analysis_dict
+                    .get(
+                        "repo_stats",
+                        {},
+                    )
+                    .get(
+                        "total_files"
+                    )
+                ),
+
+            "stars":
+                (
+                    analysis_dict
+                    .get(
+                        "repo_stats",
+                        {},
+                    )
+                    .get(
+                        "stars"
+                    )
+                ),
+
+            "forks":
+                (
+                    analysis_dict
+                    .get(
+                        "repo_stats",
+                        {},
+                    )
+                    .get(
+                        "forks"
+                    )
+                ),
+        },
+
 
         "technologies":
             technologies,
 
 
         "code_quality": {
+
+            "applicable":
+                code_quality.get(
+                    "applicable",
+                    True,
+                ),
+
+            "reason":
+                code_quality.get(
+                    "reason"
+                ),
 
             "overall_quality_score":
                 code_quality.get(
@@ -993,8 +1050,20 @@ Never claim a technology or implementation exists unless it appears in:
 1. detected technologies, or
 2. selected code evidence.
 
-Distinguish repository-level metadata such as README/commits from code
-evidence inside the selected evaluation scope.
+Distinguish repository-level metadata such as README, commits, and
+repository_metrics from evidence inside the selected evaluation target.
+
+IMPORTANT:
+- evaluation_target is the exact file, folder, or repository portion selected
+  for evaluation.
+- evaluation_target_metrics describe ONLY that selected target.
+- repository_metrics describe the overall GitHub repository.
+- Never say the entire repository contains only N files when N comes from
+  evaluation_target_metrics.
+- Treat selected_code_evidence and detected technologies as implementation
+  evidence for the selected evaluation target.
+- Repository-level README, commit history, stars, forks, and other metadata
+  are supporting context only unless the full repository is the selected target.
 
 ANALYSIS_EVIDENCE_JSON:
 {compact_json}

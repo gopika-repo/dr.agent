@@ -229,14 +229,24 @@ TECH_SIGNATURES: Mapping[str, Mapping[str, Iterable[str]]] = {
         ),
 
         "react": (
-            "react",
             "react-dom",
+            "from 'react'",
+            'from "react"',
+            "from 'react/",
+            'from "react/',
+            "require('react')",
+            'require("react")',
+            "@types/react",
         ),
 
         "next.js": (
-            "next",
             "nextjs",
             "next.js",
+            "from 'next/",
+            'from "next/',
+            "require('next",
+            'require("next',
+            "@next/",
         ),
 
         "vue": (
@@ -575,6 +585,16 @@ def _scan_package_json(
 
             for package in section:
 
+                package_name = str(package).strip().lower()
+
+                # Exact package-name detection prevents false positives
+                # such as "next" in normal prose or "ReAct" agent patterns.
+                if package_name == "react":
+                    detected["frameworks"].add("react")
+
+                if package_name == "next":
+                    detected["frameworks"].add("next.js")
+
                 _record_matches(
                     package,
                     detected,
@@ -664,11 +684,59 @@ def detect_technologies(
 
     detected = _empty_detection()
 
-    if not root.exists() or not root.is_dir():
+    if not root.exists():
 
         return {
             key: []
             for key in detected
+        }
+
+    # ---------------------------------------------------------
+    # Single-file evaluation support
+    # ---------------------------------------------------------
+    if root.is_file():
+
+        filename = root.name
+        lower_name = filename.lower()
+        ext = root.suffix.lower()
+
+        # Detect programming language from file extension.
+        if ext in EXTENSION_TO_LANG:
+            detected["languages"].add(
+                EXTENSION_TO_LANG[ext]
+            )
+
+        # Filename itself may contain technology signals.
+        _record_matches(
+            filename,
+            detected,
+        )
+
+        content = _safe_read(root)
+
+        if content:
+
+            # Dependency files such as package.json,
+            # requirements.txt, pyproject.toml, etc.
+            if lower_name in DEPENDENCY_FILES:
+
+                _scan_manifest(
+                    root,
+                    content,
+                    detected,
+                )
+
+            else:
+                # Explicitly selected files should be inspected
+                # even when they are documentation files such as README.md.
+                _record_matches(
+                    content,
+                    detected,
+                )
+
+        return {
+            key: sorted(values)
+            for key, values in detected.items()
         }
 
 

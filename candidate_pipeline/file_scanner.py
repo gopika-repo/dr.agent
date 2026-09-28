@@ -72,6 +72,40 @@ def scan_repository(repo_path: str) -> Dict:
             'error': f'Repository path does not exist: {repo_path}'
         }
     
+    # ---------------------------------------------------------
+    # Single-file evaluation support
+    # ---------------------------------------------------------
+    if repo_root.is_file():
+        ext = repo_root.suffix.lower()
+
+        line_count = 0
+        try:
+            with open(
+                repo_root,
+                'r',
+                encoding='utf-8',
+                errors='ignore'
+            ) as f:
+                line_count = len(f.readlines())
+        except Exception:
+            line_count = 0
+
+        return {
+            'total_files': 1,
+            'total_lines': line_count,
+            'key_directories': [],
+            'has_cicd': False,
+            'cicd_platforms': [],
+            'file_tree': {
+                ext or '[no_extension]': 1
+            },
+            'largest_files': [
+                (repo_root.name, line_count)
+            ],
+            'repository_path': str(repo_root),
+            'target_type': 'file'
+        }
+
     total_files = 0
     total_lines = 0
     identified_dirs: Set[str] = set()
@@ -141,5 +175,6 @@ def scan_repository(repo_path: str) -> Dict:
         'cicd_platforms': cicd_platforms,
         'file_tree': file_extensions,
         'largest_files': largest_files,
-        'repository_path': str(repo_root)
+        'repository_path': str(repo_root),
+        'target_type': 'folder'
     }

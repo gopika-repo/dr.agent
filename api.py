@@ -543,58 +543,194 @@ def _normalize_github_commit_data(commit_data: dict) -> dict:
 
 
 def _normalize_evaluation_scope(evaluation_scope: str) -> str:
-    """Validate and normalize the requested repository evaluation scope."""
-    scope = (evaluation_scope or "full_repo").strip().lower()
-    aliases = {
-        "full": "full_repo",
-        "repo": "full_repo",
-        "repository": "full_repo",
-        "agents": "agents_only",
-        "agent": "agents_only",
-    }
-    scope = aliases.get(scope, scope)
-    if scope not in {"full_repo", "agents_only"}:
-        raise ValueError(
-            "Invalid evaluation_scope. Supported values are 'full_repo' and 'agents_only'."
-        )
-    return scope
-
-
-def _resolve_analysis_path(repo_path: str, evaluation_scope: str, target_folder: str = "agents") -> tuple[str, str, str]:
     """
-    Resolve the directory that repository scanners are allowed to inspect.
+    Normalize only reserved evaluation modes.
+
+    Any other non-empty value is treated as a repository-relative
+    custom target, for example:
+
+        agents
+        frontend
+        backend
+        src/rag
+        README.md
+    """
+    raw_scope = str(
+        evaluation_scope or "full_repo"
+    ).strip()
+
+    lowered = raw_scope.lower()
+
+    full_repo_aliases = {
+        "full_repo",
+        "full",
+        "repo",
+        "repository",
+    }
+
+    if lowered in full_repo_aliases:
+        return "full_repo"
+
+    # Preserve legacy API values.
+    if lowered == "agents_only":
+        return "agents_only"
+
+    if lowered == "custom_folder":
+        return "custom_folder"
+
+    if not raw_scope:
+        return "full_repo"
+
+    # IMPORTANT:
+    # Preserve original capitalization for repository paths because
+    # paths can be case-sensitive on Linux.
+    return raw_scope
+
+
+def _resolve_analysis_path(
+    repo_path: str,
+    evaluation_scope: str,
+    target_folder: str = "agents",
+) -> tuple[str, str, str]:
+    """
+    Resolve what Dr. Agent should evaluate.
+
+    Supported input examples:
+
+        full_repo
+        agents_only              # legacy
+        custom_folder            # legacy + target_folder
+        agents
+        frontend
+        backend
+        src/rag
+        README.md
 
     Returns:
-        (analysis_path, normalized_scope, normalized_target_folder)
-
-    For agents_only, failure to find the target folder is an error. The function
-    never silently falls back to the repository root.
+        analysis_path
+        normalized_scope
+        normalized_target
     """
-    scope = _normalize_evaluation_scope(evaluation_scope)
+
+    requested_scope = _normalize_evaluation_scope(
+        evaluation_scope
+    )
+
     repo_root = Path(repo_path).resolve()
 
-    if scope == "full_repo":
-        return str(repo_root), scope, ""
-
-    folder = (target_folder or "agents").strip().replace('\\', '/')
-    folder = folder.strip('/')
-    if not folder:
-        folder = "agents"
-
-    candidate = (repo_root / folder).resolve()
-
-    # Prevent an API caller from escaping the cloned repository with ../ paths.
-    try:
-        candidate.relative_to(repo_root)
-    except ValueError as exc:
-        raise ValueError("target_folder must remain inside the cloned repository.") from exc
-
-    if not candidate.exists() or not candidate.is_dir():
-        raise FileNotFoundError(
-            f"Agent folder not found in the submitted repository. Expected folder: /{folder}"
+    # ---------------------------------------------------------
+    # Complete repository
+    # ---------------------------------------------------------
+    if requested_scope == "full_repo":
+        return (
+            str(repo_root),
+            "full_repo",
+            "",
         )
 
-    return str(candidate), scope, folder
+    # ---------------------------------------------------------
+    # Legacy agents_only mode
+    # ---------------------------------------------------------
+    if requested_scope == "agents_only":
+
+        target = (
+            target_folder or "agents"
+        ).strip().replace("\\", "/")
+
+        target = target.strip("/")
+
+        if not target:
+            target = "agents"
+
+        normalized_scope = "agents_only"
+
+    # ---------------------------------------------------------
+    # Legacy custom_folder mode
+    # ---------------------------------------------------------
+    elif requested_scope == "custom_folder":
+
+        target = (
+            target_folder or ""
+        ).strip().replace("\\", "/")
+
+        target = target.strip("/")
+
+        if not target:
+            raise ValueError(
+                "target_folder is required when "
+                "evaluation_scope='custom_folder'."
+            )
+
+        normalized_scope = "custom_folder"
+
+    # ---------------------------------------------------------
+    # New flexible mode
+    #
+    # evaluation_scope itself is the target.
+    #
+    # Examples:
+    #   agents
+    #   frontend
+    #   backend
+    #   src/rag
+    #   README.md
+    # ---------------------------------------------------------
+    else:
+
+        target = (
+            requested_scope
+            .strip()
+            .replace("\\", "/")
+            .strip("/")
+        )
+
+        if not target:
+            raise ValueError(
+                "evaluation_scope must specify a valid "
+                "repository target."
+            )
+
+        normalized_scope = "custom"
+
+    candidate = (
+        repo_root / target
+    ).resolve()
+
+    # ---------------------------------------------------------
+    # Security:
+    # never allow ../ or absolute paths to escape the repo.
+    # ---------------------------------------------------------
+    try:
+        candidate.relative_to(repo_root)
+
+    except ValueError as exc:
+        raise ValueError(
+            "Evaluation target must remain inside "
+            "the cloned repository."
+        ) from exc
+
+    if not candidate.exists():
+
+        raise FileNotFoundError(
+            "Requested evaluation target was not found "
+            f"in the submitted repository: /{target}"
+        )
+
+    # agents_only must specifically remain a directory.
+    if (
+        normalized_scope == "agents_only"
+        and not candidate.is_dir()
+    ):
+        raise ValueError(
+            "agents_only evaluation requires "
+            "an agents directory."
+        )
+
+    return (
+        str(candidate),
+        normalized_scope,
+        target,
+    )
 
 
 def _run_hackathon_pipeline(
@@ -619,7 +755,7 @@ def _run_hackathon_pipeline(
         if not repo_path:
             raise RuntimeError("Unable to clone repository.")
 
-        analysis_path, normalized_scope, normalized_target_folder = _resolve_analysis_path(
+        analysis_path, normalized_scope, normalized_target = _resolve_analysis_path(
             repo_path, evaluation_scope, target_folder
         )
 
@@ -644,8 +780,29 @@ def _run_hackathon_pipeline(
             "repo_url": repo_url,
             "hackathon_id": hackathon_id,
             "hackathon": hackathon,
-            "evaluation_scope": normalized_scope,
-            "target_folder": normalized_target_folder or None,
+            "evaluation_scope": (
+                "full_repo"
+                if normalized_scope == "full_repo"
+                else (
+                    "file"
+                    if Path(analysis_path).is_file()
+                    else "folder"
+                )
+            ),
+            "evaluation_target": (
+                normalized_target
+                if normalized_target
+                else "full_repo"
+            ),
+            "target_type": (
+                "repository"
+                if normalized_scope == "full_repo"
+                else (
+                    "file"
+                    if Path(analysis_path).is_file()
+                    else "folder"
+                )
+            ),
             "analysis_path": analysis_path,
             "file_scanner": scan_repository(analysis_path),
             "technologies": detect_technologies(analysis_path),
@@ -661,7 +818,7 @@ def _run_hackathon_pipeline(
 
         # Select only the most relevant code evidence from the already-selected
         # analysis scope. In agents_only mode, this cannot escape repo/agents.
-        if normalized_scope == "agents_only":
+        if normalized_scope in {"agents_only", "custom_folder", "custom"}:
             analysis["code_evidence"] = select_code_evidence(
                 analysis_path,
                 max_files=5,
@@ -740,8 +897,29 @@ def _run_hackathon_pipeline(
         )
 
         analysis["optimization_metrics"] = {
-            "evaluation_scope": normalized_scope,
-            "target_folder": normalized_target_folder or None,
+            "evaluation_scope": (
+                "full_repo"
+                if normalized_scope == "full_repo"
+                else (
+                    "file"
+                    if Path(analysis_path).is_file()
+                    else "folder"
+                )
+            ),
+            "evaluation_target": (
+                normalized_target
+                if normalized_target
+                else "full_repo"
+            ),
+            "target_type": (
+                "repository"
+                if normalized_scope == "full_repo"
+                else (
+                    "file"
+                    if Path(analysis_path).is_file()
+                    else "folder"
+                )
+            ),
             "evaluation_time_seconds": evaluation_time_seconds,
             "analysis_file_count": file_scan.get("total_files"),
             "analysis_line_count": file_scan.get("total_lines"),
@@ -778,8 +956,7 @@ async def evaluate_hackathon_single(
     github_url: str = Form(...),
     difficulty: str = Form("intermediate"),
     experience_level: str = Form("industry"),
-    evaluation_scope: str = Form("full_repo"),
-    target_folder: str = Form("agents")
+    evaluation_target: str = Form("full_repo")
 ):
     """
     Evaluates a single repository for a hackathon.
@@ -794,13 +971,29 @@ async def evaluate_hackathon_single(
         
         if not hackathon:
             return {"status": "error", "message": f"Hackathon with ID {hackathon_id} not found."}
+        # evaluation_target can be ANY valid repository-relative
+        # file or folder path, or "full_repo".
+        #
+        # Examples:
+        #   full_repo
+        #   agents
+        #   frontend
+        #   src/rag
+        #   README.md
+        #   backend/services/auth.py
+        effective_target = (
+            evaluation_target.strip()
+            if evaluation_target and evaluation_target.strip()
+            else "full_repo"
+        )
+
         analysis = _run_hackathon_pipeline(
             github_url,
             hackathon_id,
             hackathon,
             experience_level,
-            evaluation_scope=evaluation_scope,
-            target_folder=target_folder,
+            evaluation_scope=effective_target,
+            target_folder="agents",
         )
         analysis["hackathon_title"] = hackathon.get("title", "Unknown Hackathon")
         analysis["difficulty"] = difficulty
@@ -819,8 +1012,7 @@ async def evaluate_hackathon_batch(
     hackathon_id: str = Form(...),
     difficulty: str = Form("intermediate"),
     experience_level: str = Form("industry"),
-    evaluation_scope: str = Form("full_repo"),
-    target_folder: str = Form("agents"),
+    evaluation_target: str = Form("full_repo"),
     file: UploadFile = File(...)
 ):
     """
@@ -858,13 +1050,19 @@ async def evaluate_hackathon_batch(
                 
             print(f"[Batch] Analyzing {repo_url}...")
             try:
+                effective_target = (
+                    evaluation_target.strip()
+                    if evaluation_target and evaluation_target.strip()
+                    else "full_repo"
+                )
+
                 analysis = _run_hackathon_pipeline(
                     repo_url,
                     hackathon_id,
                     hackathon,
                     experience_level,
-                    evaluation_scope=evaluation_scope,
-                    target_folder=target_folder,
+                    evaluation_scope=effective_target,
+                    target_folder="agents",
                 )
                 analysis["difficulty"] = difficulty
                 results.append(analysis)

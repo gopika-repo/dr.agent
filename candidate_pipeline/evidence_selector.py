@@ -242,7 +242,42 @@ def _collect_candidates(
     candidates: List[Dict] = []
 
 
-    if not root.exists() or not root.is_dir():
+    if not root.exists():
+        return candidates
+
+    # ---------------------------------------------------------
+    # Single-file evaluation support
+    # ---------------------------------------------------------
+    if root.is_file():
+
+        filename = root.name
+        extension = root.suffix.lower()
+        lower_name = filename.lower()
+
+        content = _safe_read(root)
+
+        if not content:
+            return candidates
+
+        # For an explicitly selected file, allow text/documentation
+        # files such as README.md as evidence too.
+        relative_path = filename
+
+        score, matched_terms = _calculate_relevance(
+            relative_path,
+            content,
+        )
+
+        candidates.append(
+            {
+                "path": relative_path,
+                "absolute_path": str(root),
+                "score": max(score, 1),
+                "matched_terms": matched_terms,
+                "content": content,
+            }
+        )
+
         return candidates
 
 

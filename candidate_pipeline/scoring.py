@@ -100,17 +100,49 @@ def calculate_scores(
     readme = analysis_dict.get("readme", {}) or {}
     commits = analysis_dict.get("commits", {}) or {}
 
-    component_scores = {
-        "code_quality": _num(code_quality.get("overall_quality_score"), 50),
-        "tech_match": _calculate_tech_match(tech_stack, criteria),
-        "completeness": _calculate_completeness(file_scan, code_quality),
-        "documentation": _num(readme.get("quality_score"), 0) * 10,
-        "activity": _calculate_activity_score(commits),
-        "architecture": _calculate_architecture_score(file_scan, code_quality),
-        "testing": (
+    implementation_applicable = bool(
+        code_quality.get("applicable", True)
+    )
+
+    if implementation_applicable:
+        code_quality_score = _num(
+            code_quality.get("overall_quality_score"),
+            50,
+        )
+        completeness_score = _calculate_completeness(
+            file_scan,
+            code_quality,
+        )
+        architecture_score = _calculate_architecture_score(
+            file_scan,
+            code_quality,
+        )
+        testing_score = (
             _num(code_quality.get("docstring_coverage"), 0) * 0.5
             + _num(code_quality.get("type_hint_coverage"), 0) * 0.5
-        ),
+        )
+    else:
+        # Documentation/config/manifest-only targets must not receive
+        # artificial implementation-quality baseline points.
+        code_quality_score = 0.0
+        completeness_score = 0.0
+        architecture_score = 0.0
+        testing_score = 0.0
+
+    tech_match_score = (
+        _calculate_tech_match(tech_stack, criteria)
+        if implementation_applicable
+        else 0.0
+    )
+
+    component_scores = {
+        "code_quality": code_quality_score,
+        "tech_match": tech_match_score,
+        "completeness": completeness_score,
+        "documentation": _num(readme.get("quality_score"), 0) * 10,
+        "activity": _calculate_activity_score(commits),
+        "architecture": architecture_score,
+        "testing": testing_score,
     }
     component_scores = {key: round(_clamp(value), 3) for key, value in component_scores.items()}
 
@@ -139,6 +171,15 @@ def calculate_scores(
         "challenge_id": challenge_id,
         "hackathon_id": hackathon_id,
         "experience_level": experience_level,
+        "implementation_scoring_applicable": implementation_applicable,
+        "implementation_scoring_reason": (
+            None
+            if implementation_applicable
+            else code_quality.get(
+                "reason",
+                "No supported source code in the selected evaluation target.",
+            )
+        ),
         "experience_multiplier": adjustment_details["multiplier"],
         "base_score": round(base_percentage, 3),
         "adjusted_score": round(_clamp(adjusted_percentage), 3),
