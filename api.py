@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import requests
+import time
 from dotenv import dotenv_values
 from pymongo import MongoClient
 from dotenv import load_dotenv
@@ -29,6 +30,7 @@ from candidate_pipeline.readme_analyzer import analyze_readme
 from candidate_pipeline.commit_analyzer import analyze_commits
 from candidate_pipeline.scoring import calculate_scores
 from candidate_pipeline.gemini_evaluator import evaluate_with_gemini
+from candidate_pipeline.evidence_selector import select_code_evidence
 
 load_dotenv()
 
@@ -351,7 +353,7 @@ def process_evaluation(csv_content: str, challenge_id: str, difficulty: str, exp
                     commit_data = backend.github_client.get_commit_data(owner, repo)
                     repo_stats = backend.github_client.get_repo_stats(owner, repo)
                 except Exception as e:
-                    print(f"⚠️ Error fetching GitHub stats for {repo_url}: {e}")
+                    print("GitHub stats error:", e)
 
             repo_analysis = analysis_result.get("data", {}).get("repo_analysis", {})
             repo_analysis['repo_stats'] = repo_stats
@@ -604,6 +606,9 @@ def _run_hackathon_pipeline(
     target_folder: str = "agents",
 ) -> dict:
     """Run the local candidate pipeline for one hackathon repository."""
+
+    evaluation_started_at = time.perf_counter()
+
     owner, repo = backend.github_client.extract_owner_repo(repo_url)
     if not owner or not repo:
         raise ValueError("Invalid GitHub repository URL.")
@@ -630,7 +635,7 @@ def _run_hackathon_pipeline(
             commit_data = backend.github_client.get_commit_data(owner, repo)
             repo_stats = backend.github_client.get_repo_stats(owner, repo)
         except Exception as exc:
-            print(f"⚠️ Error fetching GitHub stats for {repo_url}: {exc}")
+            print("GitHub stats error:", exc)
 
         remote_commits = _normalize_github_commit_data(commit_data)
         commits_for_scoring = remote_commits or local_commits
@@ -653,6 +658,23 @@ def _run_hackathon_pipeline(
             "commit_data": commit_data,
             "repo_stats": repo_stats,
         }
+
+        # Select only the most relevant code evidence from the already-selected
+        # analysis scope. In agents_only mode, this cannot escape repo/agents.
+        if normalized_scope == "agents_only":
+            analysis["code_evidence"] = select_code_evidence(
+                analysis_path,
+                max_files=5,
+                max_chars_per_file=1500,
+                max_total_chars=6000,
+            )
+        else:
+            analysis["code_evidence"] = select_code_evidence(
+                analysis_path,
+                max_files=8,
+                max_chars_per_file=2200,
+                max_total_chars=12000,
+            )
         analysis["tech_detection"] = analysis["technologies"]
 
         hackathon_db_data = _build_hackathon_pipeline_payload(hackathon)
@@ -696,6 +718,55 @@ def _run_hackathon_pipeline(
         }
 
         analysis["gemini_eval"] = evaluate_with_gemini(analysis, hackathon_id)
+
+        gemini_eval = analysis.get("gemini_eval", {}) or {}
+        token_metrics = (
+            gemini_eval.get("token_metrics", {})
+            if isinstance(gemini_eval, dict)
+            else {}
+        )
+        usage = (
+            gemini_eval.get("usage", {})
+            if isinstance(gemini_eval, dict)
+            else {}
+        )
+
+        evidence = analysis.get("code_evidence", {}) or {}
+        file_scan = analysis.get("file_scanner", {}) or {}
+
+        evaluation_time_seconds = round(
+            time.perf_counter() - evaluation_started_at,
+            3,
+        )
+
+        analysis["optimization_metrics"] = {
+            "evaluation_scope": normalized_scope,
+            "target_folder": normalized_target_folder or None,
+            "evaluation_time_seconds": evaluation_time_seconds,
+            "analysis_file_count": file_scan.get("total_files"),
+            "analysis_line_count": file_scan.get("total_lines"),
+            "evidence_candidate_files": evidence.get("candidate_files", 0),
+            "evidence_files_sent_to_gemini": evidence.get("selected_files", 0),
+            "evidence_characters_sent_to_gemini": evidence.get("total_chars", 0),
+            "prompt_characters": token_metrics.get("prompt_characters"),
+            "estimated_prompt_tokens": token_metrics.get("estimated_prompt_tokens"),
+            "input_tokens_before_generation": token_metrics.get(
+                "input_tokens_before_generation"
+            ),
+            "actual_prompt_tokens": (
+                usage.get("prompt_tokens")
+                or token_metrics.get("input_tokens_before_generation")
+            ),
+            "actual_output_tokens": (
+                usage.get("output_tokens")
+                or token_metrics.get("output_tokens_counted")
+            ),
+            "actual_total_tokens": (
+                usage.get("total_tokens")
+                or token_metrics.get("total_tokens_counted")
+            ),
+        }
+
         return analysis
     finally:
         if repo_path:

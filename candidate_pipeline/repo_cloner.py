@@ -1,129 +1,228 @@
 """
 Repository Cloner - Clone GitHub repositories to local temp directories.
-
-Uses subprocess to execute git clone commands with proper error handling
-and cleanup. Extracted owner/repo from URL using regex patterns.
 """
 
-import subprocess
 import os
-import tempfile
-import shutil
 import re
+import shutil
 import stat
-from pathlib import Path
+import subprocess
+import tempfile
 from typing import Optional
 
 
-def extract_owner_repo(repo_url: str) -> tuple[Optional[str], Optional[str]]:
+def _normalize_repo_url(repo_url: str) -> str:
     """
-    Extract owner and repo name from any GitHub URL format.
-    
-    Handles formats:
-    - https://github.com/owner/repo
-    - https://github.com/owner/repo.git
-    - git@github.com:owner/repo
-    - git@github.com:owner/repo.git
-    
-    Args:
-        repo_url: GitHub repository URL
-        
-    Returns:
-        Tuple of (owner, repo) or (None, None) if parsing fails
+    Clean repository URL before validation and cloning.
     """
+
+    repo_url = (repo_url or "").strip()
+
     if not repo_url:
-        return None, None
-    
-    url = repo_url.strip().rstrip('/')
-    # Remove .git suffix
-    url = re.sub(r'\.git$', '', url)
-    
-    # Match github.com/owner/repo or github.com:owner/repo patterns
-    match = re.search(r'github\.com[/:]([^/]+)/([^/?#]+)', url)
-    if match:
-        return match.group(1), match.group(2)
-    
-    return None, None
+        raise ValueError("GitHub repository URL cannot be empty.")
+
+    return repo_url
 
 
-def clone_repository(repo_url: str, temp_base_dir: Optional[str] = None) -> Optional[str]:
+def extract_owner_repo(
+    repo_url: str,
+) -> tuple[Optional[str], Optional[str]]:
     """
-    Clone a GitHub repository to a temporary local directory.
-    
-    Args:
-        repo_url: GitHub repository URL
-        temp_base_dir: Optional base directory for temp files. 
-                      Defaults to system temp directory.
-    
-    Returns:
-        Absolute path to cloned repository directory, or None if cloning fails
-        
-    Raises:
-        ValueError: If repository URL is invalid or malformed
-        RuntimeError: If git is not installed or cloning fails
+    Extract GitHub owner and repository name.
+
+    Supports:
+    https://github.com/owner/repo
+    https://github.com/owner/repo.git
+    git@github.com:owner/repo.git
     """
-    owner, repo = extract_owner_repo(repo_url)
-    if not owner or not repo:
-        raise ValueError(f"Invalid GitHub repository URL: {repo_url}")
-    
-    # Create temp directory
-    temp_base = temp_base_dir or tempfile.gettempdir()
-    temp_dir = tempfile.mkdtemp(prefix=f"{repo}_", dir=temp_base)
-    
+
     try:
-        # Run git clone
+        repo_url = _normalize_repo_url(repo_url)
+    except ValueError:
+        return None, None
+
+    url = repo_url.rstrip("/")
+
+    url = re.sub(
+        r"\.git$",
+        "",
+        url,
+        flags=re.IGNORECASE,
+    )
+
+    match = re.search(
+        r"github\.com[/:]([^/\s]+)/([^/?#\s]+)",
+        url,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return None, None
+
+    owner = match.group(1).strip()
+    repo = match.group(2).strip()
+
+    if not owner or not repo:
+        return None, None
+
+    return owner, repo
+
+
+def clone_repository(
+    repo_url: str,
+    temp_base_dir: Optional[str] = None,
+) -> str:
+    """
+    Clone GitHub repository into temporary directory.
+
+    Uses shallow cloning because source analysis does not require
+    the entire git history.
+
+    Full commit history should be obtained using GitHub API.
+    """
+
+    # Important:
+    # Strip accidental spaces before passing URL to git.
+    repo_url = _normalize_repo_url(repo_url)
+
+    owner, repo = extract_owner_repo(repo_url)
+
+    if not owner or not repo:
+        raise ValueError(
+            f"Invalid GitHub repository URL: {repo_url}"
+        )
+
+    temp_base = temp_base_dir or tempfile.gettempdir()
+
+    os.makedirs(
+        temp_base,
+        exist_ok=True,
+    )
+
+    temp_dir = tempfile.mkdtemp(
+        prefix=f"{repo}_",
+        dir=temp_base,
+    )
+
+    try:
+        command = [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            repo_url,
+            temp_dir,
+        ]
+
         result = subprocess.run(
-            ['git', 'clone', '--depth', '1', repo_url, temp_dir],
+            command,
             capture_output=True,
             text=True,
-            timeout=60
+            timeout=60,
+            check=False,
         )
-        
+
         if result.returncode != 0:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            raise RuntimeError(
-                f"Git clone failed for {repo_url}: {result.stderr}"
+            error_message = (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "Unknown git clone error"
             )
-        
-        return temp_dir
-        
-    except FileNotFoundError:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError("Git is not installed or not in PATH")
-    except subprocess.TimeoutExpired:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"Git clone timed out for {repo_url}")
-    except Exception as e:
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        raise RuntimeError(f"Unexpected error during cloning: {str(e)}")
+
+            shutil.rmtree(
+                temp_dir,
+                ignore_errors=True,
+            )
+
+            raise RuntimeError(
+                f"Git clone failed for {repo_url}: "
+                f"{error_message}"
+            )
+
+        if not os.path.isdir(temp_dir):
+            raise RuntimeError(
+                "Git clone reported success but repository "
+                "directory was not created."
+            )
+
+        return os.path.abspath(temp_dir)
+
+    except FileNotFoundError as exc:
+
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True,
+        )
+
+        raise RuntimeError(
+            "Git is not installed or is not available in PATH."
+        ) from exc
+
+    except subprocess.TimeoutExpired as exc:
+
+        shutil.rmtree(
+            temp_dir,
+            ignore_errors=True,
+        )
+
+        raise RuntimeError(
+            f"Git clone timed out after 60 seconds for {repo_url}"
+        ) from exc
+
+    except Exception:
+
+        if os.path.exists(temp_dir):
+            shutil.rmtree(
+                temp_dir,
+                ignore_errors=True,
+            )
+
+        raise
 
 
-def cleanup_repository(repo_path: str) -> bool:
+def cleanup_repository(
+    repo_path: str,
+) -> bool:
     """
-    Clean up a cloned repository directory.
-    
-    Args:
-        repo_path: Path to the repository directory to clean up
-        
-    Returns:
-        True if cleanup succeeded, False otherwise
+    Remove cloned temporary repository.
     """
-    def _handle_remove_readonly(func, path, exc_info):
-        try:
-            os.chmod(path, stat.S_IWRITE)
-            func(path)
-        except Exception:
-            raise
+
+    if not repo_path:
+        return True
+
+    def _handle_remove_readonly(
+        func,
+        path,
+        exc_info,
+    ):
+        os.chmod(
+            path,
+            stat.S_IWRITE,
+        )
+
+        func(path)
 
     try:
+
         if os.path.exists(repo_path):
-            shutil.rmtree(repo_path, onerror=_handle_remove_readonly)
+
+            shutil.rmtree(
+                repo_path,
+                onerror=_handle_remove_readonly,
+            )
+
         return True
-    except Exception as e:
-        print(f"Warning: Failed to cleanup repository at {repo_path}: {e}")
+
+    except Exception as exc:
+
+        print(
+            f"Warning: Failed to cleanup repository "
+            f"at {repo_path}: {exc}"
+        )
+
         return False
 
 
-# Compatibility aliases used by the hackathon pipeline and verification scripts.
+# Backward compatibility
 clone_repo = clone_repository
 cleanup_repo = cleanup_repository

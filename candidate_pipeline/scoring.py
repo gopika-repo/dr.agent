@@ -114,7 +114,12 @@ def calculate_scores(
     }
     component_scores = {key: round(_clamp(value), 3) for key, value in component_scores.items()}
 
-    raw_category_scores = _map_to_challenge_categories(component_scores, criteria, challenge_id)
+    raw_category_scores = _map_to_challenge_categories(
+        component_scores,
+        criteria,
+        challenge_id,
+        tech_stack,
+    )
     adjusted_scores, adjustment_details = apply_experience_adjustment(
         raw_category_scores, experience_level, criteria
     )
@@ -385,13 +390,68 @@ def _map_to_challenge_categories(
     component_scores: Dict[str, float],
     criteria: Dict[str, Any],
     challenge_id: Optional[str],
+    tech_stack: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     del challenge_id
+
     weights = _category_weights(criteria)
     category_scores: Dict[str, float] = {}
+
+    detected_tech = _flatten_detected_technologies(
+        tech_stack or {}
+    )
+
+    required_tech = [
+        str(item)
+        for item in criteria.get("required_tech", [])
+        if str(item).strip()
+    ]
+
     for category, weight in weights.items():
-        percentage = _score_category(category, component_scores)
-        category_scores[category] = round((percentage / 100.0) * weight, 3)
+
+        category_text = (
+            str(category)
+            .replace("_", " ")
+            .lower()
+        )
+
+        # If the criterion explicitly names a required technology,
+        # that technology must actually be detected.
+        named_required_tech = []
+
+        for required in required_tech:
+            normalised_required = _normalise_tech(required)
+
+            if (
+                normalised_required
+                and normalised_required in category_text
+            ):
+                named_required_tech.append(required)
+
+        if named_required_tech:
+
+            technology_present = all(
+                any(
+                    _tech_matches(required, detected)
+                    for detected in detected_tech
+                )
+                for required in named_required_tech
+            )
+
+            if not technology_present:
+                category_scores[category] = 0.0
+                continue
+
+        percentage = _score_category(
+            category,
+            component_scores,
+        )
+
+        category_scores[category] = round(
+            (percentage / 100.0) * weight,
+            3,
+        )
+
     return category_scores
 
 

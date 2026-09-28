@@ -1,312 +1,799 @@
 """
-Technology Detector - Detect tech stack from repository files.
+Technology Detector - repository technology and AI/agent capability detection.
 
-Analyzes requirements.txt, package.json, Gemfile, pyproject.toml, and
-file extensions to categorize technologies into AI/ML, frameworks,
-databases, DevOps, and testing categories.
+The detector works only inside the path it receives.
+
+So:
+
+full_repo
+    -> scans complete repository
+
+agents_only
+    -> scans only repo/agents
+
+This detector uses dependency manifests, filenames, imports,
+and bounded source-code content.
+
+It does NOT use an LLM and does NOT hardcode evaluation scores.
 """
 
-import os
+from __future__ import annotations
+
 import json
-import re
+import os
 from pathlib import Path
-from typing import Dict, List, Set
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Set
 
 
-# Technology patterns mapped to categories
-TECH_PATTERNS = {
-    'ai_ml': [
-        'opencv', 'cv2', 'tensorflow', 'torch', 'pytorch', 'keras',
-        'sklearn', 'scikit-learn', 'numpy', 'scipy', 'pandas',
-        'langchain', 'crewai', 'langgraph', 'transformers', 'huggingface',
-        'llm', 'openai', 'anthropic', 'gemini', 'mistral',
-        'yolo', 'detectron', 'rnn', 'lstm', 'gpt', 'bert',
-        'spacy', 'nltk', 'gensim', 'xgboost', 'lightgbm',
-        'ocr', 'tesseract', 'easyocr', 'paddleocr', 'multimodal'
-    ],
-    'frameworks': [
-        'django', 'flask', 'fastapi', 'starlette', 'aiohttp',
-        'react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt',
-        'express', 'hapi', 'koa', 'nestjs',
-        'spring', 'hibernate', 'tomcat',
-        'rails', 'sinatra',
-        'laravel', 'symfony',
-        'gin', 'echo', 'chi',
-        'rocket', 'actix', 'warp'
-    ],
-    'databases': [
-        'postgresql', 'postgres', 'mysql', 'mariadb', 'sqlite',
-        'mongodb', 'cassandra', 'couchdb', 'firebase',
-        'redis', 'memcached', 'elasticache',
-        'dynamodb', 'aurora', 'cloudspanner',
-        'cockroachdb', 'elasticsearch', 'opensearch',
-        'neo4j', 'graph', 'vector', 'qdrant', 'weaviate', 'pinecone'
-    ],
-    'devops': [
-        'docker', 'dockerfile', 'docker-compose',
-        'kubernetes', 'k8s', 'helm', 'istio',
-        'terraform', 'cloudformation', 'ansible', 'puppet',
-        'github-actions', 'gitlab-ci', 'jenkins', 'circleci', 'travis',
-        'aws', 'azure', 'gcp', 'digitalocean',
-        'nginx', 'apache', 'haproxy',
-        'prometheus', 'grafana', 'datadog', 'newrelic',
-        'ecs', 'lambda', 'fargate', 'appengine'
-    ],
-    'testing': [
-        'pytest', 'unittest', 'nose', 'testng',
-        'jest', 'mocha', 'jasmine', 'vitest',
-        'rspec', 'minitest',
-        'phpunit', 'cakephp',
-        'testify', 'gtest',
-        'selenium', 'playwright', 'cypress', 'puppeteer',
-        'coverage', 'codecov', 'sonarqube', 'cobertura',
-        'mock', 'faker', 'hypothesis'
-    ]
+SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".pytest_cache",
+    "dist",
+    "build",
+    ".next",
+    ".turbo",
+    "coverage",
+    ".idea",
+    ".vscode",
 }
 
-# File extension to language mapping
+
+# Prevent extremely large files from being read just for tech detection.
+MAX_SOURCE_FILE_BYTES = 256_000
+
+
+# ---------------------------------------------------------------------
+# Technology signatures
+# ---------------------------------------------------------------------
+
+TECH_SIGNATURES: Mapping[str, Mapping[str, Iterable[str]]] = {
+
+    "ai_ml": {
+        "openai": (
+            "openai",
+            "@ai-sdk/openai",
+        ),
+
+        "anthropic": (
+            "anthropic",
+            "@anthropic-ai/sdk",
+            "claude",
+        ),
+
+        "gemini": (
+            "google.generativeai",
+            "google.genai",
+            "@google/generative-ai",
+            "gemini",
+        ),
+
+        "groq": (
+            "groq",
+            "groq-sdk",
+        ),
+
+        "mistral": (
+            "mistralai",
+            "@mistralai",
+            "mistral",
+        ),
+
+        "transformers": (
+            "transformers",
+            "huggingface",
+        ),
+
+        "tensorflow": (
+            "tensorflow",
+        ),
+
+        "pytorch": (
+            "torch",
+            "pytorch",
+        ),
+
+        "scikit-learn": (
+            "sklearn",
+            "scikit-learn",
+        ),
+
+        "opencv": (
+            "opencv",
+            "cv2",
+        ),
+
+        "llm": (
+            "llm",
+            "large language model",
+            "chatcompletion",
+            "generatecontent",
+        ),
+
+        "multimodal": (
+            "multimodal",
+            "vision model",
+            "image_url",
+            "image input",
+        ),
+    },
+
+
+    "agent_frameworks": {
+
+        "mastra": (
+            "@mastra/",
+            "from 'mastra",
+            'from "mastra',
+            "mastra.",
+        ),
+
+        "langchain": (
+            "langchain",
+            "@langchain/",
+        ),
+
+        "langgraph": (
+            "langgraph",
+            "@langchain/langgraph",
+        ),
+
+        "crewai": (
+            "crewai",
+            "crew ai",
+        ),
+
+        "autogen": (
+            "autogen",
+            "pyautogen",
+            "microsoft/autogen",
+        ),
+
+        "semantic-kernel": (
+            "semantic_kernel",
+            "semantic-kernel",
+            "@microsoft/semantic-kernel",
+        ),
+
+        "ai agents": (
+            "agent(",
+            "new agent",
+            "createagent",
+            "agent =",
+            "agent:",
+            "tool calling",
+            "tool_call",
+        ),
+    },
+
+
+    "rag": {
+
+        "rag": (
+            "retrieval augmented",
+            "retrieval-augmented",
+            "rag pipeline",
+            "retriever",
+            "retrieval",
+        ),
+
+        "embeddings": (
+            "embedding",
+            "embeddings",
+            "embedmany",
+            "embedquery",
+        ),
+
+        "vector search": (
+            "vector search",
+            "similarity search",
+            "semantic search",
+            "nearest neighbor",
+        ),
+    },
+
+
+    "security_ai": {
+
+        "enkrypt ai": (
+            "enkrypt",
+            "enkryptai",
+            "enkrypt ai",
+        ),
+
+        "guardrails": (
+            "guardrail",
+            "prompt injection",
+            "content filter",
+            "input validation",
+            "output validation",
+        ),
+    },
+
+
+    "frameworks": {
+
+        "fastapi": (
+            "fastapi",
+        ),
+
+        "flask": (
+            "flask",
+        ),
+
+        "django": (
+            "django",
+        ),
+
+        "react": (
+            "react",
+            "react-dom",
+        ),
+
+        "next.js": (
+            "next",
+            "nextjs",
+            "next.js",
+        ),
+
+        "vue": (
+            "vue",
+        ),
+
+        "angular": (
+            "@angular/",
+            "angular",
+        ),
+
+        "svelte": (
+            "svelte",
+        ),
+
+        "express": (
+            "express",
+        ),
+
+        "nestjs": (
+            "@nestjs/",
+            "nestjs",
+        ),
+    },
+
+
+    "databases": {
+
+        "qdrant": (
+            "qdrant",
+            "@qdrant/js-client",
+            "qdrant-client",
+        ),
+
+        "pinecone": (
+            "pinecone",
+        ),
+
+        "weaviate": (
+            "weaviate",
+        ),
+
+        "milvus": (
+            "milvus",
+            "pymilvus",
+        ),
+
+        "chroma": (
+            "chromadb",
+            "chroma",
+        ),
+
+        "faiss": (
+            "faiss",
+        ),
+
+        "postgresql": (
+            "postgresql",
+            "postgres",
+            "psycopg",
+            "pgvector",
+        ),
+
+        "mongodb": (
+            "mongodb",
+            "pymongo",
+            "mongoose",
+        ),
+
+        "redis": (
+            "redis",
+        ),
+
+        "sqlite": (
+            "sqlite",
+        ),
+
+        "mysql": (
+            "mysql",
+        ),
+
+        "neo4j": (
+            "neo4j",
+        ),
+
+        "turso": (
+            "turso",
+            "libsql",
+        ),
+
+        "vector db": (
+            "vector database",
+            "vector db",
+            "vectorstore",
+            "vector store",
+        ),
+    },
+
+
+    "devops": {
+
+        "docker": (
+            "docker",
+            "dockerfile",
+            "docker-compose",
+        ),
+
+        "kubernetes": (
+            "kubernetes",
+            "k8s",
+            "helm",
+        ),
+
+        "github-actions": (
+            ".github/workflows",
+            "github actions",
+        ),
+
+        "aws": (
+            "boto3",
+            "aws-sdk",
+            "amazon web services",
+        ),
+
+        "azure": (
+            "azure",
+        ),
+
+        "gcp": (
+            "google-cloud",
+            "gcp",
+        ),
+
+        "cloudflare": (
+            "cloudflare",
+            "wrangler",
+        ),
+
+        "vercel": (
+            "vercel",
+        ),
+    },
+
+
+    "testing": {
+
+        "pytest": (
+            "pytest",
+        ),
+
+        "unittest": (
+            "unittest",
+        ),
+
+        "jest": (
+            "jest",
+        ),
+
+        "vitest": (
+            "vitest",
+        ),
+
+        "mocha": (
+            "mocha",
+        ),
+
+        "playwright": (
+            "playwright",
+        ),
+
+        "cypress": (
+            "cypress",
+        ),
+    },
+}
+
+
+# ---------------------------------------------------------------------
+# Language detection
+# ---------------------------------------------------------------------
+
 EXTENSION_TO_LANG = {
-    '.py': 'python',
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.java': 'java',
-    '.cpp': 'cpp',
-    '.c': 'c',
-    '.cs': 'csharp',
-    '.go': 'go',
-    '.rs': 'rust',
-    '.rb': 'ruby',
-    '.php': 'php',
-    '.swift': 'swift',
-    '.kotlin': 'kotlin',
-    '.scala': 'scala',
-    '.r': 'r',
-    '.m': 'objective_c',
-    '.html': 'html',
-    '.css': 'css',
-    '.sql': 'sql',
-    '.sh': 'shell',
-    '.bash': 'shell'
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".java": "java",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".c": "c",
+    ".cs": "csharp",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".scala": "scala",
+    ".r": "r",
+    ".html": "html",
+    ".css": "css",
+    ".sql": "sql",
+    ".sh": "shell",
+    ".bash": "shell",
 }
 
 
-def detect_technologies(repo_path: str) -> Dict[str, List[str]]:
+SOURCE_EXTENSIONS = set(EXTENSION_TO_LANG) | {
+    ".json",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".md",
+    ".txt",
+    ".mjs",
+    ".cjs",
+}
+
+
+DEPENDENCY_FILES = {
+    "requirements.txt",
+    "requirements-dev.txt",
+    "pyproject.toml",
+    "poetry.lock",
+    "pipfile",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "gemfile",
+    "gemfile.lock",
+    "go.mod",
+    "cargo.toml",
+}
+
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+def _empty_detection() -> Dict[str, Set[str]]:
     """
-    Detect technology stack from repository files.
-    
-    Analyzes:
-    - requirements.txt (Python dependencies)
-    - package.json (Node.js dependencies)
-    - Gemfile (Ruby dependencies)
-    - pyproject.toml (Python project config)
-    - go.mod (Go dependencies)
-    - Cargo.toml (Rust dependencies)
-    - File extensions present in repository
-    
-    Args:
-        repo_path: Path to repository root
-        
-    Returns:
-        Dictionary with categories as keys, lists of detected technologies as values:
-        {
-            'ai_ml': [...],
-            'frameworks': [...],
-            'databases': [...],
-            'devops': [...],
-            'testing': [...],
-            'languages': [...]
-        }
+    Create empty technology detection structure.
     """
-    repo_root = Path(repo_path)
-    detected_tech: Dict[str, Set[str]] = {
-        'ai_ml': set(),
-        'frameworks': set(),
-        'databases': set(),
-        'devops': set(),
-        'testing': set(),
-        'languages': set()
+
+    result: Dict[str, Set[str]] = {
+        category: set()
+        for category in TECH_SIGNATURES
     }
-    
-    if not repo_root.exists():
-        return {k: list(v) for k, v in detected_tech.items()}
-    
-    # Track file extensions found
-    file_extensions: Set[str] = set()
-    
-    # Scan for dependency files and file extensions
-    for root, dirs, files in os.walk(repo_root):
-        # Skip common non-essential directories
-        dirs[:] = [d for d in dirs if d not in {
-            '.git', '.venv', 'venv', 'node_modules', '__pycache__',
-            '.pytest_cache', 'dist', 'build', '.env'
-        }]
-        
-        # Collect file extensions
-        for file_name in files:
-            ext = Path(file_name).suffix.lower()
-            if ext in EXTENSION_TO_LANG:
-                detected_tech['languages'].add(EXTENSION_TO_LANG[ext])
-                file_extensions.add(ext)
-        
-        # Process dependency files
-        for file_name in files:
-            file_path = os.path.join(root, file_name)
-            
-            try:
-                if file_name == 'requirements.txt':
-                    _parse_requirements(file_path, detected_tech)
-                
-                elif file_name == 'package.json':
-                    _parse_package_json(file_path, detected_tech)
-                
-                elif file_name == 'Gemfile':
-                    _parse_gemfile(file_path, detected_tech)
-                
-                elif file_name == 'pyproject.toml':
-                    _parse_pyproject_toml(file_path, detected_tech)
-                
-                elif file_name == 'go.mod':
-                    _parse_go_mod(file_path, detected_tech)
-                
-                elif file_name == 'Cargo.toml':
-                    _parse_cargo_toml(file_path, detected_tech)
-                
-                elif file_name == 'Gemfile.lock':
-                    _parse_gemfile_lock(file_path, detected_tech)
-                
-                elif file_name == 'poetry.lock':
-                    _parse_poetry_lock(file_path, detected_tech)
-                
-            except Exception:
-                pass
-    
-    # Convert sets to lists and sort
-    result = {}
-    for category, techs in detected_tech.items():
-        result[category] = sorted(list(techs))
-    
+
+    result["languages"] = set()
+
     return result
 
 
-def _parse_requirements(file_path: str, detected_tech: Dict) -> None:
-    """Parse Python requirements.txt file."""
+def _normalise_text(value: str) -> str:
+    """
+    Normalize strings for case-insensitive matching.
+    """
+
+    return str(value).lower().replace("\\", "/")
+
+
+def _record_matches(
+    text: str,
+    detected: MutableMapping[str, Set[str]],
+) -> None:
+    """
+    Detect technology signatures inside text.
+    """
+
+    haystack = _normalise_text(text)
+
+    for category, technologies in TECH_SIGNATURES.items():
+
+        for canonical, indicators in technologies.items():
+
+            if any(
+                _normalise_text(indicator) in haystack
+                for indicator in indicators
+            ):
+                detected[category].add(canonical)
+
+
+def _safe_read(path: Path) -> str:
+    """
+    Safely read source/config files with a size limit.
+    """
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip().lower()
-                if not line or line.startswith('#'):
-                    continue
-                
-                # Extract package name before version specifiers
-                package = re.split(r'[<>=!]', line)[0].strip()
-                package = package.replace('-', '_').replace('.', '_')
-                
-                # Match against patterns
-                _match_tech_patterns(package, detected_tech)
-    except Exception:
-        pass
+
+        if path.stat().st_size > MAX_SOURCE_FILE_BYTES:
+            return ""
+
+        return path.read_text(
+            encoding="utf-8",
+            errors="ignore",
+        )
+
+    except (OSError, UnicodeError):
+        return ""
 
 
-def _parse_package_json(file_path: str, detected_tech: Dict) -> None:
-    """Parse Node.js package.json file."""
+def _scan_package_json(
+    content: str,
+    detected: MutableMapping[str, Set[str]],
+) -> None:
+    """
+    Inspect package.json dependencies and scripts.
+    """
+
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            dependencies = {**data.get('dependencies', {}), **data.get('devDependencies', {})}
-            for package in dependencies.keys():
-                _match_tech_patterns(package.lower(), detected_tech)
-    except Exception:
-        pass
+        data = json.loads(content)
+
+    except (TypeError, ValueError):
+
+        _record_matches(
+            content,
+            detected,
+        )
+
+        return
+
+    dependency_sections = (
+        data.get("dependencies", {}),
+        data.get("devDependencies", {}),
+        data.get("peerDependencies", {}),
+        data.get("optionalDependencies", {}),
+    )
+
+    for section in dependency_sections:
+
+        if isinstance(section, dict):
+
+            for package in section:
+
+                _record_matches(
+                    package,
+                    detected,
+                )
+
+    scripts = data.get(
+        "scripts",
+        {},
+    )
+
+    if isinstance(scripts, dict):
+
+        _record_matches(
+            " ".join(
+                map(
+                    str,
+                    scripts.values(),
+                )
+            ),
+            detected,
+        )
 
 
-def _parse_gemfile(file_path: str, detected_tech: Dict) -> None:
-    """Parse Ruby Gemfile."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip().lower()
-                if 'gem ' in line:
-                    match = re.search(r"gem\s+['\"]([^'\"]+)['\"]", line)
-                    if match:
-                        _match_tech_patterns(match.group(1), detected_tech)
-    except Exception:
-        pass
+def _scan_manifest(
+    path: Path,
+    content: str,
+    detected: MutableMapping[str, Set[str]],
+) -> None:
+    """
+    Inspect dependency manifest.
+    """
+
+    if path.name.lower() == "package.json":
+
+        _scan_package_json(
+            content,
+            detected,
+        )
+
+    else:
+
+        _record_matches(
+            content,
+            detected,
+        )
 
 
-def _parse_pyproject_toml(file_path: str, detected_tech: Dict) -> None:
-    """Parse Python pyproject.toml file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read().lower()
-            for line in content.split('\n'):
-                if '=' in line and not line.strip().startswith('['):
-                    package = line.split('=')[0].strip().strip('"\'')
-                    _match_tech_patterns(package, detected_tech)
-    except Exception:
-        pass
+# ---------------------------------------------------------------------
+# Public detector
+# ---------------------------------------------------------------------
+
+def detect_technologies(
+    repo_path: str,
+) -> Dict[str, List[str]]:
+    """
+    Detect technologies implemented or referenced inside repo_path.
+
+    IMPORTANT:
+
+    This function ONLY scans the path that is provided to it.
+
+    Therefore:
+
+    full_repo:
+        detect_technologies(repo_root)
+
+    agents_only:
+        detect_technologies(repo_root / "agents")
+
+    This is important for Dr. Agent token and scope optimization.
+
+    Returns:
+        {
+            "ai_ml": [...],
+            "agent_frameworks": [...],
+            "rag": [...],
+            "security_ai": [...],
+            "frameworks": [...],
+            "databases": [...],
+            "devops": [...],
+            "testing": [...],
+            "languages": [...]
+        }
+    """
+
+    root = Path(repo_path)
+
+    detected = _empty_detection()
+
+    if not root.exists() or not root.is_dir():
+
+        return {
+            key: []
+            for key in detected
+        }
 
 
-def _parse_go_mod(file_path: str, detected_tech: Dict) -> None:
-    """Parse Go go.mod file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip().lower()
-                if line.startswith('require'):
-                    parts = line.split()
-                    if len(parts) > 1:
-                        _match_tech_patterns(parts[1], detected_tech)
-    except Exception:
-        pass
+    for current_root, dirs, files in os.walk(root):
+
+        # Skip large/generated directories.
+        dirs[:] = [
+            directory
+            for directory in dirs
+            if directory.lower() not in SKIP_DIRS
+        ]
+
+        current = Path(current_root)
 
 
-def _parse_cargo_toml(file_path: str, detected_tech: Dict) -> None:
-    """Parse Rust Cargo.toml file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            content = f.read().lower()
-            for line in content.split('\n'):
-                if '=' in line and not line.strip().startswith('['):
-                    package = line.split('=')[0].strip().strip('"\'')
-                    _match_tech_patterns(package, detected_tech)
-    except Exception:
-        pass
+        # Folder names themselves may contain useful signals:
+        #
+        # agents/
+        # rag/
+        # qdrant/
+        # workflows/
+        #
+        if current != root:
+
+            relative_dir = (
+                current
+                .relative_to(root)
+                .as_posix()
+            )
+
+            _record_matches(
+                relative_dir,
+                detected,
+            )
 
 
-def _parse_gemfile_lock(file_path: str, detected_tech: Dict) -> None:
-    """Parse Ruby Gemfile.lock."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip().lower()
-                if '(' in line and not line.startswith('ruby') and not line.startswith('bundled'):
-                    package = line.split('(')[0].strip()
-                    _match_tech_patterns(package, detected_tech)
-    except Exception:
-        pass
+        for filename in files:
+
+            path = current / filename
+
+            lower_name = filename.lower()
+
+            ext = path.suffix.lower()
 
 
-def _parse_poetry_lock(file_path: str, detected_tech: Dict) -> None:
-    """Parse Poetry poetry.lock file."""
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip().lower()
-                if line.startswith('name = '):
-                    package = line.replace('name = ', '').strip().strip('"\'')
-                    _match_tech_patterns(package, detected_tech)
-    except Exception:
-        pass
+            # ---------------------------------------------------------
+            # Programming language
+            # ---------------------------------------------------------
+
+            if ext in EXTENSION_TO_LANG:
+
+                detected["languages"].add(
+                    EXTENSION_TO_LANG[ext]
+                )
 
 
-def _match_tech_patterns(package: str, detected_tech: Dict) -> None:
-    """Match package against known technology patterns."""
-    package = package.lower().replace('-', '_').replace('.', '_')
-    
-    for category, patterns in TECH_PATTERNS.items():
-        for pattern in patterns:
-            if package == pattern or pattern in package:
-                detected_tech[category].add(pattern)
-                return
+            # ---------------------------------------------------------
+            # Filename/path technology evidence
+            # ---------------------------------------------------------
+
+            try:
+
+                relative_path = (
+                    path
+                    .relative_to(root)
+                    .as_posix()
+                )
+
+            except ValueError:
+
+                relative_path = str(path)
+
+
+            _record_matches(
+                relative_path,
+                detected,
+            )
+
+
+            # ---------------------------------------------------------
+            # Decide whether file content should be inspected
+            # ---------------------------------------------------------
+
+            should_read = (
+                lower_name in DEPENDENCY_FILES
+                or ext in SOURCE_EXTENSIONS
+            )
+
+            if not should_read:
+                continue
+
+
+            content = _safe_read(path)
+
+            if not content:
+                continue
+
+
+            # ---------------------------------------------------------
+            # Dependency manifests
+            # ---------------------------------------------------------
+
+            if lower_name in DEPENDENCY_FILES:
+
+                _scan_manifest(
+                    path,
+                    content,
+                    detected,
+                )
+
+
+            # ---------------------------------------------------------
+            # Source code / documentation
+            # ---------------------------------------------------------
+
+            else:
+
+                _record_matches(
+                    content,
+                    detected,
+                )
+
+
+    # Convert sets to deterministic sorted lists.
+    return {
+        category: sorted(values)
+        for category, values in detected.items()
+    }
